@@ -1,0 +1,12 @@
+[package]
+name = "gitabase"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+git2 = "0.15"
+serde = "1.0"
+chrono = "0.4"
+tempdir = "0.3"
