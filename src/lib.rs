@@ -1,5 +1,5 @@
-use std::path::Path;
 use std::str;
+use std::{collections::HashMap, path::Path};
 
 use git2::{BranchType, Commit, Repository, Signature, Time};
 
@@ -45,14 +45,20 @@ impl Database {
         return Some(blob_content.to_vec());
     }
 
-    pub fn set(&self, key: &str, value: &[u8]) {
-        let blob = self.repository.blob(value).unwrap();
+    pub fn set_batch<'a, I, T>(&self, items: I)
+    where
+        I: IntoIterator<Item = (T, &'a [u8])>,
+        T: AsRef<str>,
+    {
         let commit = self.current_commit();
         let mut tree_builder = self
             .repository
             .treebuilder(Some(&commit.tree().unwrap()))
             .unwrap();
-        tree_builder.insert(key, blob, 0o100644).unwrap();
+        for (key, value) in items {
+            let blob = self.repository.blob(value).unwrap();
+            tree_builder.insert(key.as_ref(), blob, 0o100644).unwrap();
+        }
         let tree_id = tree_builder.write().unwrap();
         let current_time = &Time::new(chrono::Utc::now().timestamp(), 0);
         let signature = Signature::new("test", "test", current_time).unwrap();
@@ -75,6 +81,10 @@ impl Database {
             .unwrap()
             .set_target(commit_obj, "update db")
             .unwrap();
+    }
+
+    pub fn set(&self, key: &str, value: &[u8]) {
+        self.set_batch([(key, value)]);
     }
 
     pub fn revert_to_commit(&self, commit: &str) {}
@@ -110,6 +120,8 @@ pub mod test;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::test::*;
 
     #[test]
@@ -117,6 +129,23 @@ mod tests {
         let (db, _td) = create_db();
         db.set("key", "value".as_bytes());
         assert_eq!(db.get("key").unwrap(), "value".as_bytes());
+    }
+
+    #[test]
+    fn batch_set_and_get() {
+        let (db, _td) = create_db();
+        let mut hm = HashMap::new();
+        hm.insert("a", "initial a value".as_bytes());
+        hm.insert("b", "initial b value".as_bytes());
+        hm.insert("c", "initial c value".as_bytes());
+        let mut hm2 = hm.clone();
+        db.set_batch(hm);
+        assert_eq!(db.get("a").unwrap(), "initial a value".as_bytes());
+        assert_eq!(db.get("b").unwrap(), "initial b value".as_bytes());
+        assert_eq!(db.get("c").unwrap(), "initial c value".as_bytes());
+        hm2.insert("a", "changed a value".as_bytes());
+        db.set_batch(hm2);
+        assert_eq!(db.get("a").unwrap(), "changed a value".as_bytes());
     }
 
     #[test]
