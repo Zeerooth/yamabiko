@@ -3,6 +3,8 @@ use std::str;
 
 use git2::{BranchType, Commit, Repository, Signature, Time};
 
+pub mod error;
+
 pub struct Database {
     repository: Repository,
 }
@@ -75,7 +77,25 @@ impl Database {
             .unwrap();
     }
 
-    pub fn revert(&self, commit: &str) {}
+    pub fn revert_to_commit(&self, commit: &str) {}
+
+    pub fn revert_n_commits(&self, n: usize) -> Result<(), error::RevertError> {
+        if n == 0 {
+            return Ok(());
+        }
+        let head = self.repository.head().unwrap().target().unwrap();
+        let mut target_commit = self.repository.find_commit(head).unwrap();
+        for _ in 0..n {
+            if target_commit.parent_count() > 1 {
+                return Err(error::RevertError::BranchingHistory { commit: head });
+            }
+            target_commit = target_commit.parent(0).unwrap();
+        }
+        self.repository
+            .reset(target_commit.as_object(), git2::ResetType::Soft, None)
+            .unwrap();
+        Ok(())
+    }
 
     fn current_commit(&self) -> Commit {
         let branch = self
@@ -86,23 +106,33 @@ impl Database {
     }
 }
 
+pub mod test;
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use tempdir::TempDir;
+    use super::test::*;
 
     #[test]
     fn set_and_get() {
-        let tmpdir = TempDir::new("test-repo").unwrap();
-        let db = Database::create(tmpdir.path());
+        let (db, _td) = create_db();
         db.set("key", "value".as_bytes());
         assert_eq!(db.get("key").unwrap(), "value".as_bytes());
     }
 
     #[test]
     fn get_non_existent_value() {
-        let tmpdir = TempDir::new("test-repo").unwrap();
-        let db = Database::create(tmpdir.path());
+        let (db, _td) = create_db();
         assert_eq!(db.get("key"), None);
+    }
+
+    #[test]
+    fn test_revert_n_commits() {
+        let (db, _td) = create_db();
+        db.set("a", b"initial a value");
+        db.set("b", b"initial b value");
+        db.set("b", b"changed b value");
+        assert_eq!(db.get("b").unwrap(), b"changed b value");
+        db.revert_n_commits(1).unwrap();
+        assert_eq!(db.get("b").unwrap(), b"initial b value");
     }
 }

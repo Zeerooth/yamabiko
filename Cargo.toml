@@ -1,5 +1,5 @@
 [package]
-name = "gitabase"
+name = "yamabiko"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,4 +9,11 @@ edition = "2021"
 git2 = "0.15"
 serde = "1.0"
 chrono = "0.4"
-tempdir = "0.3"
+tempfile = "3.3"
+
+[dev-dependencies]
+bencher = "0.1"
+
+[[bench]]
+name = "perf"
+harness = false
