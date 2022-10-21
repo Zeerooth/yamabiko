@@ -3,67 +3,42 @@ use std::collections::HashMap;
 use criterion::{criterion_group, criterion_main, Criterion};
 use yamabiko::test::create_db;
 
-fn fifty_sets(bench: &mut Criterion) {
-    let (db, _td) = create_db();
-    bench.bench_function("set 50", |b| {
+fn bench_sets(bench: &mut Criterion) {
+    bench.bench_function("sets on empty db", |b| {
+        let (db, _td) = create_db();
+        let mut i = 0;
         b.iter(|| {
-            (0..50).fold(0, |_a, x| {
-                db.set(format!("key-{}", x).as_str(), b"some value");
-                x
-            })
+            db.set(format!("key-{}", i).as_str(), b"some value");
+            i += 1;
         })
     });
-}
-
-fn fifty_sets_on_large_database(bench: &mut Criterion) {
-    let (db, _td) = create_db();
-    let hm = (0..10_000)
-        .map(|x| (x.to_string(), "some value".as_bytes()))
-        .collect::<Vec<(String, &[u8])>>();
-    db.set_batch(hm);
-    bench.bench_function("set 50; large database", |b| {
+    bench.bench_function("sets on larger database", |b| {
+        let (db, _td) = create_db();
+        const INIT_DB_SIZE: usize = 10_000;
+        let hm: [usize; INIT_DB_SIZE] = core::array::from_fn(|i| i + 1);
+        let hm2 = hm
+            .iter()
+            .map(|x| (format!("key-{}", x), "some value".as_bytes()));
+        db.set_batch(hm2);
+        let mut i = INIT_DB_SIZE;
         b.iter(|| {
-            (0..50).fold(0, |_a, x| {
-                db.set(format!("key-{}", x).as_str(), b"some value");
-                x
-            })
+            db.set(format!("key-{}", i).as_str(), b"some value");
+            i += 1;
         })
     });
-}
-
-fn two_hundred_sets(bench: &mut Criterion) {
-    let (db, _td) = create_db();
-    bench.bench_function("set 200", |b| {
+    bench.bench_function("batch set", |b| {
+        let (db, _td) = create_db();
+        let mut i = 0;
         b.iter(|| {
-            (0..200).fold(0, |_a, x| {
-                db.set(format!("key-{}", x).as_str(), b"some value");
-                x
-            })
+            let mut hm = HashMap::with_capacity(100);
+            for x in 0..100 {
+                hm.insert(format!("key-{}", x + i), "some value".as_bytes());
+            }
+            db.set_batch(hm);
+            i += 100;
         });
     });
 }
 
-fn thousand_batch_sets(bench: &mut Criterion) {
-    bench.bench_function("batch set 100", |b| {
-        b.iter(|| {
-            (0..5).fold(0, |_a, w| {
-                let (db, _td) = create_db();
-                let mut hm = HashMap::with_capacity(1000);
-                for x in 0..1000 {
-                    hm.insert(format!("key-{}", x), "some value".as_bytes());
-                }
-                db.set_batch(hm);
-                w
-            })
-        });
-    });
-}
-
-criterion_group!(
-    benches,
-    fifty_sets,
-    fifty_sets_on_large_database,
-    two_hundred_sets,
-    thousand_batch_sets
-);
+criterion_group!(benches, bench_sets);
 criterion_main!(benches);
