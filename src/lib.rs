@@ -1,7 +1,8 @@
+use std::path::Path;
 use std::str;
-use std::{collections::HashMap, path::Path};
 
-use git2::{BranchType, Commit, Repository, Signature, Time};
+use blake3;
+use git2::{BranchType, Commit, Oid, Repository, Signature, Time, Tree, TreeBuilder};
 
 pub mod error;
 
@@ -33,16 +34,18 @@ impl Database {
     }
 
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
+        let path = Self::construct_path_to_key(key);
         let tree_entry = self
             .current_commit()
             .tree()
             .unwrap()
-            .get_name(key)?
+            .get_path(Path::new(&path))
+            .ok()?
             .to_object(&self.repository)
             .unwrap();
         let blob = tree_entry.as_blob().unwrap();
         let blob_content = blob.content();
-        return Some(blob_content.to_vec());
+        Some(blob_content.to_vec())
     }
 
     pub fn set_batch<'a, I, T>(&self, items: I)
@@ -51,26 +54,18 @@ impl Database {
         T: AsRef<str>,
     {
         let commit = self.current_commit();
-        let mut tree_builder = self
-            .repository
-            .treebuilder(Some(&commit.tree().unwrap()))
-            .unwrap();
+        let mut root_tree = commit.tree().unwrap();
         for (key, value) in items {
             let blob = self.repository.blob(value).unwrap();
-            tree_builder.insert(key.as_ref(), blob, 0o100644).unwrap();
+            let hash = blake3::hash(key.as_ref().as_bytes());
+            let trees = self.make_tree(hash.as_bytes(), &root_tree, key.as_ref(), blob);
+            root_tree = self.repository.find_tree(trees).unwrap();
         }
-        let tree_id = tree_builder.write().unwrap();
         let current_time = &Time::new(chrono::Utc::now().timestamp(), 0);
         let signature = Signature::new("test", "test", current_time).unwrap();
         let new_commit = self
             .repository
-            .commit_create_buffer(
-                &signature,
-                &signature,
-                "update db",
-                &self.repository.find_tree(tree_id).unwrap(),
-                &[&commit],
-            )
+            .commit_create_buffer(&signature, &signature, "update db", &root_tree, &[&commit])
             .unwrap();
         let commit_obj = self
             .repository
@@ -83,11 +78,54 @@ impl Database {
             .unwrap();
     }
 
+    fn make_tree<'a>(&'a self, oid: &[u8], root_tree: &'a Tree, key: &str, blob: Oid) -> Oid {
+        let mut trees: Vec<TreeBuilder> =
+            vec![self.repository.treebuilder(Some(root_tree)).unwrap()];
+        for part in 0..2 {
+            let parent_tree = trees.pop().unwrap();
+            let octal_part = oid[part];
+            let mut tree_builder = parent_tree
+                .get(format!("{octal_part:o}"))
+                .unwrap()
+                .map(|x| {
+                    self.repository
+                        .treebuilder(Some(
+                            &x.to_object(&self.repository).unwrap().into_tree().unwrap(),
+                        ))
+                        .unwrap()
+                })
+                .unwrap_or_else(|| self.repository.treebuilder(None).unwrap());
+            if part == 1 {
+                tree_builder.insert(key, blob, 0o100644).unwrap();
+            }
+            trees.push(parent_tree);
+            trees.push(tree_builder);
+        }
+        let mut index: usize = 2;
+        loop {
+            if let Some(self_tree) = trees.pop() {
+                if let Some(mut parent_tree) = trees.pop() {
+                    let tree_id = self_tree.write().unwrap();
+                    index -= 1;
+                    let octal_part = oid[index];
+                    parent_tree
+                        .insert(format!("{octal_part:o}"), tree_id, 0o040000)
+                        .unwrap();
+                    trees.push(parent_tree);
+                } else {
+                    return self_tree.write().unwrap();
+                }
+            } else {
+                panic!("This shouldn't have happened");
+            }
+        }
+    }
+
     pub fn set(&self, key: &str, value: &[u8]) {
         self.set_batch([(key, value)]);
     }
 
-    pub fn revert_to_commit(&self, commit: &str) {}
+    pub fn revert_to_commit(&self, _commit: &str) {}
 
     pub fn revert_n_commits(&self, n: usize) -> Result<(), error::RevertError> {
         if n == 0 {
@@ -113,6 +151,19 @@ impl Database {
             .find_branch("main", BranchType::Local)
             .unwrap();
         branch.get().peel_to_commit().unwrap()
+    }
+
+    fn construct_path_to_key(key: &str) -> String {
+        let hash = blake3::hash(key.as_bytes());
+        let hash_bytes = hash.as_bytes();
+        let mut path = String::new();
+        for x in 0..2 {
+            let val = &hash_bytes[x];
+            path.push_str(format!("{val:o}").as_ref());
+            path.push('/');
+        }
+        path.push_str(key);
+        path
     }
 }
 

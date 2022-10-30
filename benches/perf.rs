@@ -14,7 +14,7 @@ fn bench_sets(bench: &mut Criterion) {
     });
     bench.bench_function("sets on larger database", |b| {
         let (db, _td) = create_db();
-        const INIT_DB_SIZE: usize = 10_000;
+        const INIT_DB_SIZE: usize = 1_000;
         let hm: [usize; INIT_DB_SIZE] = core::array::from_fn(|i| i + 1);
         let hm2 = hm
             .iter()
@@ -40,5 +40,32 @@ fn bench_sets(bench: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_sets);
+fn bench_sets_and_gets(bench: &mut Criterion) {
+    bench.bench_function("gets on empty db", |b| {
+        let (db, _td) = create_db();
+        let mut i = 0;
+        b.iter(|| {
+            db.set(format!("key-{}", i).as_str(), b"some value");
+            db.get(format!("key-{}", i).as_str());
+            i += 1;
+        })
+    });
+    bench.bench_function("gets on larger database", |b| {
+        let (db, _td) = create_db();
+        const INIT_DB_SIZE: usize = 1_000;
+        let hm: [usize; INIT_DB_SIZE] = core::array::from_fn(|i| i + 1);
+        let hm2 = hm
+            .iter()
+            .map(|x| (format!("key-{}", x), "some value".as_bytes()));
+        db.set_batch(hm2);
+        let mut i = INIT_DB_SIZE;
+        b.iter(|| {
+            db.set(format!("key-{}", i).as_str(), b"some value");
+            db.get(format!("key-{}", i).as_str());
+            i += 1;
+        })
+    });
+}
+
+criterion_group!(benches, bench_sets, bench_sets_and_gets);
 criterion_main!(benches);
