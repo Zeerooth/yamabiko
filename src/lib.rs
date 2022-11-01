@@ -5,15 +5,18 @@ use blake3;
 use git2::{BranchType, Commit, Oid, Repository, Signature, Time, Tree, TreeBuilder};
 
 pub mod error;
+pub mod replica;
 
-pub struct Database {
+pub struct Collection {
     repository: Repository,
+    replicas: Vec<replica::Replica>,
 }
 
-impl Database {
+impl Collection {
     pub fn load(path: &Path) -> Self {
         Self {
             repository: Repository::open(path).unwrap(),
+            replicas: Vec::new(),
         }
     }
 
@@ -30,7 +33,31 @@ impl Database {
             let head_commit = repo.find_commit(head).unwrap();
             repo.branch("main", &head_commit, true).unwrap();
         }
-        Self { repository: repo }
+        Self {
+            repository: repo,
+            replicas: Vec::new(),
+        }
+    }
+
+    pub fn add_replica<S>(&mut self, name: S, url: S)
+    where
+        S: AsRef<str>,
+    {
+        if self
+            .replicas
+            .iter()
+            .any(|x| x.remote.as_str() == name.as_ref())
+        {
+            return;
+        }
+        let remote = self
+            .repository
+            .find_remote(name.as_ref())
+            .unwrap_or_else(|_| self.repository.remote(name.as_ref(), url.as_ref()).unwrap());
+        self.replicas.push(replica::Replica {
+            remote: remote.name().unwrap().to_string(),
+            replication_method: replica::ReplicationMethod::All,
+        });
     }
 
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
@@ -76,6 +103,13 @@ impl Database {
             .unwrap()
             .set_target(commit_obj, "update db")
             .unwrap();
+        for replica in &self.replicas {
+            self.repository
+                .find_remote(&replica.remote)
+                .unwrap()
+                .push(&["refs/heads/main"], None)
+                .unwrap();
+        }
     }
 
     fn make_tree<'a>(&'a self, oid: &[u8], root_tree: &'a Tree, key: &str, blob: Oid) -> Oid {
@@ -214,5 +248,35 @@ mod tests {
         assert_eq!(db.get("b").unwrap(), b"changed b value");
         db.revert_n_commits(1).unwrap();
         assert_eq!(db.get("b").unwrap(), b"initial b value");
+    }
+
+    #[test]
+    fn test_replica_same_name() {
+        let (mut db, _td) = create_db();
+        let (_, _td_backup) = create_db();
+        db.add_replica("test", _td_backup.path().to_str().unwrap());
+        db.add_replica("test", _td_backup.path().to_str().unwrap());
+        assert_eq!(db.replicas.len(), 1);
+    }
+
+    #[test]
+    fn test_replica_already_in_git() {
+        let (mut db, _td) = create_db();
+        let (_, _td_backup) = create_db();
+        db.repository
+            .remote("test", _td_backup.path().to_str().unwrap())
+            .unwrap();
+        db.add_replica("test", _td_backup.path().to_str().unwrap());
+        assert_eq!(db.replicas.len(), 1);
+    }
+
+    #[test]
+    fn test_replica_sync() {
+        let (mut db, _td) = create_db();
+        let (db_backup, _td_backup) = create_db();
+        db.add_replica("test", _td_backup.path().to_str().unwrap());
+        assert_eq!(db.replicas.len(), 1);
+        db.set("a", b"a value");
+        assert_eq!(db_backup.get("a").unwrap(), b"a value");
     }
 }
