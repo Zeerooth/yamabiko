@@ -1,4 +1,4 @@
-use git2::{Commit, Oid};
+use git2::Oid;
 
 #[derive(Debug)]
 pub enum RevertError {

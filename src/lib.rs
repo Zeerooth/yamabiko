@@ -1,22 +1,26 @@
-use std::path::Path;
 use std::str;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::{collections::HashMap, path::Path};
 
 use blake3;
 use git2::{BranchType, Commit, Oid, Repository, Signature, Time, Tree, TreeBuilder};
+use tokio::runtime::{Handle, Runtime};
 
 pub mod error;
 pub mod replica;
 
 pub struct Collection {
-    repository: Repository,
+    repository: Arc<Mutex<Repository>>,
     replicas: Vec<replica::Replica>,
+    handle: Handle,
 }
 
 impl Collection {
     pub fn load(path: &Path) -> Self {
         Self {
-            repository: Repository::open(path).unwrap(),
+            repository: Arc::new(Mutex::new(Repository::open(path).unwrap())),
             replicas: Vec::new(),
+            handle: Collection::get_runtime_handle().0,
         }
     }
 
@@ -34,8 +38,9 @@ impl Collection {
             repo.branch("main", &head_commit, true).unwrap();
         }
         Self {
-            repository: repo,
+            repository: Arc::new(Mutex::new(repo)),
             replicas: Vec::new(),
+            handle: Collection::get_runtime_handle().0,
         }
     }
 
@@ -50,10 +55,10 @@ impl Collection {
         {
             return;
         }
-        let remote = self
-            .repository
+        let repo = self.repository.lock().unwrap();
+        let remote = repo
             .find_remote(name.as_ref())
-            .unwrap_or_else(|_| self.repository.remote(name.as_ref(), url.as_ref()).unwrap());
+            .unwrap_or_else(|_| repo.remote(name.as_ref(), url.as_ref()).unwrap());
         self.replicas.push(replica::Replica {
             remote: remote.name().unwrap().to_string(),
             replication_method: replica::ReplicationMethod::All,
@@ -62,59 +67,75 @@ impl Collection {
 
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
         let path = Self::construct_path_to_key(key);
-        let tree_entry = self
-            .current_commit()
+        let repo = self.repository.lock().unwrap();
+        let tree_entry = Collection::current_commit(&repo)
             .tree()
             .unwrap()
             .get_path(Path::new(&path))
             .ok()?
-            .to_object(&self.repository)
+            .to_object(&repo)
             .unwrap();
         let blob = tree_entry.as_blob().unwrap();
         let blob_content = blob.content();
         Some(blob_content.to_vec())
     }
 
-    pub fn set_batch<'a, I, T>(&self, items: I)
+    pub fn set_batch<'a, I, T>(
+        &self,
+        items: I,
+    ) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>>
     where
         I: IntoIterator<Item = (T, &'a [u8])>,
         T: AsRef<str>,
     {
-        let commit = self.current_commit();
-        let mut root_tree = commit.tree().unwrap();
-        for (key, value) in items {
-            let blob = self.repository.blob(value).unwrap();
-            let hash = blake3::hash(key.as_ref().as_bytes());
-            let trees = self.make_tree(hash.as_bytes(), &root_tree, key.as_ref(), blob);
-            root_tree = self.repository.find_tree(trees).unwrap();
-        }
-        let current_time = &Time::new(chrono::Utc::now().timestamp(), 0);
-        let signature = Signature::new("test", "test", current_time).unwrap();
-        let new_commit = self
-            .repository
-            .commit_create_buffer(&signature, &signature, "update db", &root_tree, &[&commit])
-            .unwrap();
-        let commit_obj = self
-            .repository
-            .commit_signed(str::from_utf8(&new_commit).unwrap(), "", None)
-            .unwrap();
-        self.repository
-            .head()
-            .unwrap()
-            .set_target(commit_obj, "update db")
-            .unwrap();
-        for replica in &self.replicas {
-            self.repository
-                .find_remote(&replica.remote)
+        let repo = self.repository.lock().unwrap();
+        let commit = Collection::current_commit(&repo);
+        {
+            let mut root_tree = commit.tree().unwrap();
+            for (key, value) in items {
+                let blob = repo.blob(value).unwrap();
+                let hash = blake3::hash(key.as_ref().as_bytes());
+                let trees =
+                    Collection::make_tree(&repo, hash.as_bytes(), &root_tree, key.as_ref(), blob);
+                root_tree = repo.find_tree(trees).unwrap();
+            }
+            let current_time = &Time::new(chrono::Utc::now().timestamp(), 0);
+            let signature = Signature::new("test", "test", current_time).unwrap();
+            let new_commit = repo
+                .commit_create_buffer(&signature, &signature, "update db", &root_tree, &[&commit])
+                .unwrap();
+            let commit_obj = repo
+                .commit_signed(str::from_utf8(&new_commit).unwrap(), "", None)
+                .unwrap();
+            repo.head()
                 .unwrap()
-                .push(&["refs/heads/main"], None)
+                .set_target(commit_obj, "update db")
                 .unwrap();
         }
+        drop(commit);
+        drop(repo);
+        let mut remote_push_results = HashMap::new();
+        for replica in &self.replicas {
+            let data = Arc::clone(&self.repository);
+            let replica_remote = replica.remote.clone();
+            let task = self.handle.spawn(async move {
+                let repo = data.lock().unwrap();
+                let mut remote = repo.find_remote(&replica_remote).unwrap().clone();
+                remote.push(&["refs/heads/main"], None)
+            });
+            remote_push_results.insert(replica.remote.clone(), task);
+        }
+        remote_push_results
     }
 
-    fn make_tree<'a>(&'a self, oid: &[u8], root_tree: &'a Tree, key: &str, blob: Oid) -> Oid {
-        let mut trees: Vec<TreeBuilder> =
-            vec![self.repository.treebuilder(Some(root_tree)).unwrap()];
+    fn make_tree<'a>(
+        repo: &'a MutexGuard<Repository>,
+        oid: &[u8],
+        root_tree: &'a Tree,
+        key: &str,
+        blob: Oid,
+    ) -> Oid {
+        let mut trees: Vec<TreeBuilder> = vec![repo.treebuilder(Some(root_tree)).unwrap()];
         for part in 0..2 {
             let parent_tree = trees.pop().unwrap();
             let octal_part = oid[part];
@@ -122,13 +143,10 @@ impl Collection {
                 .get(format!("{octal_part:o}"))
                 .unwrap()
                 .map(|x| {
-                    self.repository
-                        .treebuilder(Some(
-                            &x.to_object(&self.repository).unwrap().into_tree().unwrap(),
-                        ))
+                    repo.treebuilder(Some(&x.to_object(&repo).unwrap().into_tree().unwrap()))
                         .unwrap()
                 })
-                .unwrap_or_else(|| self.repository.treebuilder(None).unwrap());
+                .unwrap_or_else(|| repo.treebuilder(None).unwrap());
             if part == 1 {
                 tree_builder.insert(key, blob, 0o100644).unwrap();
             }
@@ -155,8 +173,12 @@ impl Collection {
         }
     }
 
-    pub fn set(&self, key: &str, value: &[u8]) {
-        self.set_batch([(key, value)]);
+    pub fn set(
+        &self,
+        key: &str,
+        value: &[u8],
+    ) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>> {
+        self.set_batch([(key, value)])
     }
 
     pub fn revert_to_commit(&self, _commit: &str) {}
@@ -165,26 +187,27 @@ impl Collection {
         if n == 0 {
             return Ok(());
         }
-        let head = self.repository.head().unwrap().target().unwrap();
-        let mut target_commit = self.repository.find_commit(head).unwrap();
+        let repo = self.repository.lock().unwrap();
+        let head = repo.head().unwrap().target().unwrap();
+        let mut target_commit = repo.find_commit(head).unwrap();
         for _ in 0..n {
             if target_commit.parent_count() > 1 {
                 return Err(error::RevertError::BranchingHistory { commit: head });
             }
             target_commit = target_commit.parent(0).unwrap();
         }
-        self.repository
-            .reset(target_commit.as_object(), git2::ResetType::Soft, None)
+        repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)
             .unwrap();
         Ok(())
     }
 
-    fn current_commit(&self) -> Commit {
-        let branch = self
-            .repository
+    fn current_commit<'a>(repo: &'a MutexGuard<Repository>) -> Commit<'a> {
+        let reference = repo
             .find_branch("main", BranchType::Local)
-            .unwrap();
-        branch.get().peel_to_commit().unwrap()
+            .unwrap()
+            .into_reference();
+        let commit = reference.peel_to_commit().unwrap();
+        commit
     }
 
     fn construct_path_to_key(key: &str) -> String {
@@ -198,6 +221,16 @@ impl Collection {
         }
         path.push_str(key);
         path
+    }
+
+    fn get_runtime_handle() -> (Handle, Option<Runtime>) {
+        match Handle::try_current() {
+            Ok(h) => (h, None),
+            Err(_) => {
+                let rt = Runtime::new().unwrap();
+                (rt.handle().clone(), Some(rt))
+            }
+        }
     }
 }
 
@@ -264,19 +297,32 @@ mod tests {
         let (mut db, _td) = create_db();
         let (_, _td_backup) = create_db();
         db.repository
+            .lock()
+            .unwrap()
             .remote("test", _td_backup.path().to_str().unwrap())
             .unwrap();
         db.add_replica("test", _td_backup.path().to_str().unwrap());
         assert_eq!(db.replicas.len(), 1);
     }
 
-    #[test]
-    fn test_replica_sync() {
+    #[tokio::test]
+    async fn test_replica_sync() {
         let (mut db, _td) = create_db();
         let (db_backup, _td_backup) = create_db();
         db.add_replica("test", _td_backup.path().to_str().unwrap());
         assert_eq!(db.replicas.len(), 1);
-        db.set("a", b"a value");
+        let result = db.set("a", b"a value");
+        for (_, value) in result {
+            value.await.unwrap().unwrap();
+        }
         assert_eq!(db_backup.get("a").unwrap(), b"a value");
+    }
+
+    #[test]
+    fn test_replica_non_existing_repo() {
+        let (mut db, _td) = create_db();
+        db.add_replica("test", "https://example.com/git.git");
+        assert_eq!(db.replicas.len(), 1);
+        db.set("a", b"a value");
     }
 }
