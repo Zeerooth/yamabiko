@@ -3,12 +3,21 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::{collections::HashMap, path::Path};
 
 use blake3;
-use git2::{BranchType, Commit, Oid, Repository, Signature, Time, Tree, TreeBuilder};
+use git2::build::CheckoutBuilder;
+use git2::{
+    BranchType, Commit, Oid, RebaseOptions, Repository, Signature, Time, Tree, TreeBuilder,
+};
+use rand::distributions::Alphanumeric;
 use rand::prelude::*;
 use tokio::runtime::{Handle, Runtime};
 
 pub mod error;
 pub mod replica;
+
+pub enum OperationTarget<'a> {
+    Main,
+    Transaction(&'a str),
+}
 
 pub struct Collection {
     repository: Arc<Mutex<Repository>>,
@@ -70,10 +79,14 @@ impl Collection {
         });
     }
 
-    pub fn get(&self, key: &str) -> Option<Vec<u8>> {
+    pub fn get(&self, key: &str, target: OperationTarget) -> Option<Vec<u8>> {
         let path = Self::construct_path_to_key(key);
+        let branch = match target {
+            OperationTarget::Main => "main",
+            OperationTarget::Transaction(t) => t,
+        };
         let repo = self.repository.lock().unwrap();
-        let tree_entry = Collection::current_commit(&repo)
+        let tree_entry = Collection::current_commit(&repo, branch)
             .tree()
             .unwrap()
             .get_path(Path::new(&path))
@@ -88,13 +101,18 @@ impl Collection {
     pub fn set_batch<'a, I, T>(
         &self,
         items: I,
+        target: OperationTarget,
     ) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>>
     where
         I: IntoIterator<Item = (T, &'a [u8])>,
         T: AsRef<str>,
     {
         let repo = self.repository.lock().unwrap();
-        let commit = Collection::current_commit(&repo);
+        let branch = match target {
+            OperationTarget::Main => "main",
+            OperationTarget::Transaction(t) => t,
+        };
+        let commit = Collection::current_commit(&repo, branch);
         {
             let mut root_tree = commit.tree().unwrap();
             for (key, value) in items {
@@ -112,8 +130,9 @@ impl Collection {
             let commit_obj = repo
                 .commit_signed(str::from_utf8(&new_commit).unwrap(), "", None)
                 .unwrap();
-            repo.head()
-                .unwrap()
+            let mut branch_ref = repo.find_branch(branch, BranchType::Local).unwrap();
+            branch_ref
+                .get_mut()
                 .set_target(commit_obj, "update db")
                 .unwrap();
         }
@@ -143,6 +162,50 @@ impl Collection {
             remote_push_results.insert(replica.remote.clone(), task);
         }
         remote_push_results
+    }
+
+    pub fn new_transaction(&self, name: Option<&str>) -> String {
+        let repo = self.repository.lock().unwrap();
+        let head = repo.head().unwrap().target().unwrap();
+        let head_commit = repo.find_commit(head).unwrap();
+        let transaction_name = name.map(|n| n.to_string()).unwrap_or_else(|| {
+            format!(
+                "t-{}",
+                rand::thread_rng()
+                    .sample_iter(&Alphanumeric)
+                    .take(8)
+                    .map(char::from)
+                    .collect::<String>()
+            )
+        });
+        repo.branch(&transaction_name, &head_commit, true).unwrap();
+        transaction_name
+    }
+
+    pub fn apply_transaction<S>(&self, name: S)
+    where
+        S: AsRef<str>,
+    {
+        let repo = self.repository.lock().unwrap();
+        let main_branch = repo
+            .find_annotated_commit(Collection::current_commit(&repo, "main").id())
+            .unwrap();
+        let target_branch = repo
+            .find_annotated_commit(Collection::current_commit(&repo, name.as_ref()).id())
+            .unwrap();
+        let mut checkout_options = CheckoutBuilder::new();
+        checkout_options.use_ours(true);
+        let mut rebase_options = RebaseOptions::new();
+        let mut rebase_opts = rebase_options
+            .inmemory(true)
+            .checkout_options(checkout_options);
+        repo.rebase(
+            Some(&target_branch),
+            Some(&main_branch),
+            None,
+            Some(&mut rebase_opts),
+        )
+        .unwrap();
     }
 
     fn make_tree<'a>(
@@ -194,8 +257,9 @@ impl Collection {
         &self,
         key: &str,
         value: &[u8],
+        target: OperationTarget,
     ) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>> {
-        self.set_batch([(key, value)])
+        self.set_batch([(key, value)], target)
     }
 
     pub fn revert_to_commit(&self, commit: Oid) {
@@ -223,9 +287,9 @@ impl Collection {
         Ok(())
     }
 
-    fn current_commit<'a>(repo: &'a MutexGuard<Repository>) -> Commit<'a> {
+    fn current_commit<'a>(repo: &'a MutexGuard<Repository>, branch: &str) -> Commit<'a> {
         let reference = repo
-            .find_branch("main", BranchType::Local)
+            .find_branch(branch.as_ref(), BranchType::Local)
             .unwrap()
             .into_reference();
         let commit = reference.peel_to_commit().unwrap();
@@ -264,15 +328,18 @@ mod tests {
 
     use git2::{BranchType, Repository};
 
-    use crate::replica::ReplicationMethod;
+    use crate::{replica::ReplicationMethod, OperationTarget};
 
     use super::test::*;
 
     #[test]
     fn set_and_get() {
         let (db, _td) = create_db();
-        db.set("key", "value".as_bytes());
-        assert_eq!(db.get("key").unwrap(), "value".as_bytes());
+        db.set("key", "value".as_bytes(), OperationTarget::Main);
+        assert_eq!(
+            db.get("key", OperationTarget::Main).unwrap(),
+            "value".as_bytes()
+        );
     }
 
     #[test]
@@ -283,39 +350,57 @@ mod tests {
         hm.insert("b", "initial b value".as_bytes());
         hm.insert("c", "initial c value".as_bytes());
         let mut hm2 = hm.clone();
-        db.set_batch(hm);
-        assert_eq!(db.get("a").unwrap(), "initial a value".as_bytes());
-        assert_eq!(db.get("b").unwrap(), "initial b value".as_bytes());
-        assert_eq!(db.get("c").unwrap(), "initial c value".as_bytes());
+        db.set_batch(hm, OperationTarget::Main);
+        assert_eq!(
+            db.get("a", OperationTarget::Main).unwrap(),
+            "initial a value".as_bytes()
+        );
+        assert_eq!(
+            db.get("b", OperationTarget::Main).unwrap(),
+            "initial b value".as_bytes()
+        );
+        assert_eq!(
+            db.get("c", OperationTarget::Main).unwrap(),
+            "initial c value".as_bytes()
+        );
         hm2.insert("a", "changed a value".as_bytes());
-        db.set_batch(hm2);
-        assert_eq!(db.get("a").unwrap(), "changed a value".as_bytes());
+        db.set_batch(hm2, OperationTarget::Main);
+        assert_eq!(
+            db.get("a", OperationTarget::Main).unwrap(),
+            "changed a value".as_bytes()
+        );
     }
 
     #[test]
     fn get_non_existent_value() {
         let (db, _td) = create_db();
-        assert_eq!(db.get("key"), None);
+        assert_eq!(db.get("key", OperationTarget::Main), None);
     }
 
     #[test]
     fn test_revert_n_commits() {
         let (db, _td) = create_db();
-        db.set("a", b"initial a value");
-        db.set("b", b"initial b value");
-        db.set("b", b"changed b value");
-        assert_eq!(db.get("b").unwrap(), b"changed b value");
+        db.set("a", b"initial a value", OperationTarget::Main);
+        db.set("b", b"initial b value", OperationTarget::Main);
+        db.set("b", b"changed b value", OperationTarget::Main);
+        assert_eq!(
+            db.get("b", OperationTarget::Main).unwrap(),
+            b"changed b value"
+        );
         db.revert_n_commits(1).unwrap();
-        assert_eq!(db.get("b").unwrap(), b"initial b value");
+        assert_eq!(
+            db.get("b", OperationTarget::Main).unwrap(),
+            b"initial b value"
+        );
     }
 
     #[test]
     fn test_revert_to_commit() {
         let (db, td) = create_db();
-        db.set("a", b"initial a value");
-        db.set("a", b"change #1");
-        db.set("a", b"change #2");
-        assert_eq!(db.get("a").unwrap(), b"change #2");
+        db.set("a", b"initial a value", OperationTarget::Main);
+        db.set("a", b"change #1", OperationTarget::Main);
+        db.set("a", b"change #2", OperationTarget::Main);
+        assert_eq!(db.get("a", OperationTarget::Main).unwrap(), b"change #2");
         let repo = Repository::open(td.path()).unwrap();
         let reference = repo
             .find_branch("main", BranchType::Local)
@@ -324,7 +409,10 @@ mod tests {
         let head_commit = reference.peel_to_commit().unwrap();
         let first_commit = head_commit.parent(0).unwrap().parent(0).unwrap().clone();
         db.revert_to_commit(first_commit.id());
-        assert_eq!(db.get("a").unwrap(), b"initial a value");
+        assert_eq!(
+            db.get("a", OperationTarget::Main).unwrap(),
+            b"initial a value"
+        );
     }
 
     #[test]
@@ -371,11 +459,14 @@ mod tests {
             ReplicationMethod::All,
         );
         assert_eq!(db.replicas.len(), 1);
-        let result = db.set("a", b"a value");
+        let result = db.set("a", b"a value", OperationTarget::Main);
         for (_, value) in result {
             value.await.unwrap().unwrap();
         }
-        assert_eq!(db_backup.get("a").unwrap(), b"a value");
+        assert_eq!(
+            db_backup.get("a", OperationTarget::Main).unwrap(),
+            b"a value"
+        );
     }
 
     #[tokio::test]
@@ -387,9 +478,22 @@ mod tests {
             ReplicationMethod::All,
         );
         assert_eq!(db.replicas.len(), 1);
-        let result = db.set("a", b"a value");
+        let result = db.set("a", b"a value", OperationTarget::Main);
         for (_, value) in result {
             assert!(value.await.unwrap().is_err());
         }
+    }
+
+    #[test]
+    fn test_simple_transaction() {
+        let (db, _td) = create_db();
+        db.set("a", b"a val", OperationTarget::Main);
+        let t = db.new_transaction(None);
+        db.set("b", b"b val", OperationTarget::Transaction(&t));
+        assert_eq!(db.get("b", OperationTarget::Main), None);
+        assert_eq!(
+            db.get("b", OperationTarget::Transaction(&t)).unwrap(),
+            b"b val"
+        );
     }
 }
