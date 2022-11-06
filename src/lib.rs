@@ -4,6 +4,7 @@ use std::{collections::HashMap, path::Path};
 
 use blake3;
 use git2::{BranchType, Commit, Oid, Repository, Signature, Time, Tree, TreeBuilder};
+use rand::prelude::*;
 use tokio::runtime::{Handle, Runtime};
 
 pub mod error;
@@ -44,8 +45,12 @@ impl Collection {
         }
     }
 
-    pub fn add_replica<S>(&mut self, name: S, url: S)
-    where
+    pub fn add_replica<S>(
+        &mut self,
+        name: S,
+        url: S,
+        replication_method: replica::ReplicationMethod,
+    ) where
         S: AsRef<str>,
     {
         if self
@@ -61,7 +66,7 @@ impl Collection {
             .unwrap_or_else(|_| repo.remote(name.as_ref(), url.as_ref()).unwrap());
         self.replicas.push(replica::Replica {
             remote: remote.name().unwrap().to_string(),
-            replication_method: replica::ReplicationMethod::All,
+            replication_method,
         });
     }
 
@@ -115,12 +120,24 @@ impl Collection {
         drop(commit);
         drop(repo);
         let mut remote_push_results = HashMap::new();
+        let mut rng = rand::thread_rng();
         for replica in &self.replicas {
+            let replicate = match replica.replication_method {
+                replica::ReplicationMethod::All => true,
+                replica::ReplicationMethod::Random(chance) => {
+                    let rand_result: f64 = rng.gen();
+                    rand_result > chance
+                }
+                _ => true,
+            };
+            if !replicate {
+                continue;
+            }
             let data = Arc::clone(&self.repository);
             let replica_remote = replica.remote.clone();
             let task = self.handle.spawn(async move {
                 let repo = data.lock().unwrap();
-                let mut remote = repo.find_remote(&replica_remote).unwrap().clone();
+                let mut remote = repo.find_remote(&replica_remote).unwrap();
                 remote.push(&["refs/heads/main"], None)
             });
             remote_push_results.insert(replica.remote.clone(), task);
@@ -181,7 +198,12 @@ impl Collection {
         self.set_batch([(key, value)])
     }
 
-    pub fn revert_to_commit(&self, _commit: &str) {}
+    pub fn revert_to_commit(&self, commit: Oid) {
+        let repo = self.repository.lock().unwrap();
+        let target_commit = repo.find_commit(commit).unwrap();
+        repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)
+            .unwrap();
+    }
 
     pub fn revert_n_commits(&self, n: usize) -> Result<(), error::RevertError> {
         if n == 0 {
@@ -240,6 +262,10 @@ pub mod test;
 mod tests {
     use std::collections::HashMap;
 
+    use git2::{BranchType, Repository};
+
+    use crate::replica::ReplicationMethod;
+
     use super::test::*;
 
     #[test]
@@ -284,11 +310,37 @@ mod tests {
     }
 
     #[test]
+    fn test_revert_to_commit() {
+        let (db, td) = create_db();
+        db.set("a", b"initial a value");
+        db.set("a", b"change #1");
+        db.set("a", b"change #2");
+        assert_eq!(db.get("a").unwrap(), b"change #2");
+        let repo = Repository::open(td.path()).unwrap();
+        let reference = repo
+            .find_branch("main", BranchType::Local)
+            .unwrap()
+            .into_reference();
+        let head_commit = reference.peel_to_commit().unwrap();
+        let first_commit = head_commit.parent(0).unwrap().parent(0).unwrap().clone();
+        db.revert_to_commit(first_commit.id());
+        assert_eq!(db.get("a").unwrap(), b"initial a value");
+    }
+
+    #[test]
     fn test_replica_same_name() {
         let (mut db, _td) = create_db();
         let (_, _td_backup) = create_db();
-        db.add_replica("test", _td_backup.path().to_str().unwrap());
-        db.add_replica("test", _td_backup.path().to_str().unwrap());
+        db.add_replica(
+            "test",
+            _td_backup.path().to_str().unwrap(),
+            ReplicationMethod::All,
+        );
+        db.add_replica(
+            "test",
+            _td_backup.path().to_str().unwrap(),
+            ReplicationMethod::All,
+        );
         assert_eq!(db.replicas.len(), 1);
     }
 
@@ -301,7 +353,11 @@ mod tests {
             .unwrap()
             .remote("test", _td_backup.path().to_str().unwrap())
             .unwrap();
-        db.add_replica("test", _td_backup.path().to_str().unwrap());
+        db.add_replica(
+            "test",
+            _td_backup.path().to_str().unwrap(),
+            ReplicationMethod::All,
+        );
         assert_eq!(db.replicas.len(), 1);
     }
 
@@ -309,7 +365,11 @@ mod tests {
     async fn test_replica_sync() {
         let (mut db, _td) = create_db();
         let (db_backup, _td_backup) = create_db();
-        db.add_replica("test", _td_backup.path().to_str().unwrap());
+        db.add_replica(
+            "test",
+            _td_backup.path().to_str().unwrap(),
+            ReplicationMethod::All,
+        );
         assert_eq!(db.replicas.len(), 1);
         let result = db.set("a", b"a value");
         for (_, value) in result {
@@ -318,11 +378,18 @@ mod tests {
         assert_eq!(db_backup.get("a").unwrap(), b"a value");
     }
 
-    #[test]
-    fn test_replica_non_existing_repo() {
+    #[tokio::test]
+    async fn test_replica_non_existing_repo() {
         let (mut db, _td) = create_db();
-        db.add_replica("test", "https://example.com/git.git");
+        db.add_replica(
+            "test",
+            "https://800.800.800.800/git.git",
+            ReplicationMethod::All,
+        );
         assert_eq!(db.replicas.len(), 1);
-        db.set("a", b"a value");
+        let result = db.set("a", b"a value");
+        for (_, value) in result {
+            assert!(value.await.unwrap().is_err());
+        }
     }
 }
