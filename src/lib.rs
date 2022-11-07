@@ -5,7 +5,8 @@ use std::{collections::HashMap, path::Path};
 use blake3;
 use git2::build::CheckoutBuilder;
 use git2::{
-    BranchType, Commit, Oid, RebaseOptions, Repository, Signature, Time, Tree, TreeBuilder,
+    BranchType, Commit, MergeOptions, Oid, RebaseOptions, Repository, Signature, Time, Tree,
+    TreeBuilder,
 };
 use rand::distributions::Alphanumeric;
 use rand::prelude::*;
@@ -17,6 +18,12 @@ pub mod replica;
 pub enum OperationTarget<'a> {
     Main,
     Transaction(&'a str),
+}
+
+pub enum ConflictResolution {
+    Overwrite,
+    DiscardChanges,
+    Abort,
 }
 
 pub struct Collection {
@@ -164,6 +171,15 @@ impl Collection {
         remote_push_results
     }
 
+    pub fn set(
+        &self,
+        key: &str,
+        value: &[u8],
+        target: OperationTarget,
+    ) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>> {
+        self.set_batch([(key, value)], target)
+    }
+
     pub fn new_transaction(&self, name: Option<&str>) -> String {
         let repo = self.repository.lock().unwrap();
         let head = repo.head().unwrap().target().unwrap();
@@ -182,7 +198,7 @@ impl Collection {
         transaction_name
     }
 
-    pub fn apply_transaction<S>(&self, name: S)
+    pub fn apply_transaction<S>(&self, name: S, conflict_resolution: ConflictResolution)
     where
         S: AsRef<str>,
     {
@@ -194,18 +210,50 @@ impl Collection {
             .find_annotated_commit(Collection::current_commit(&repo, name.as_ref()).id())
             .unwrap();
         let mut checkout_options = CheckoutBuilder::new();
-        checkout_options.use_ours(true);
+        checkout_options.force();
+        checkout_options.allow_conflicts(true);
+        let mut merge_options = MergeOptions::new();
+        match conflict_resolution {
+            ConflictResolution::DiscardChanges => {
+                checkout_options.use_theirs(true);
+            }
+            ConflictResolution::Overwrite => {
+                checkout_options.use_ours(true);
+            }
+            ConflictResolution::Abort => {
+                merge_options.fail_on_conflict(true);
+            }
+        }
         let mut rebase_options = RebaseOptions::new();
         let mut rebase_opts = rebase_options
             .inmemory(true)
-            .checkout_options(checkout_options);
-        repo.rebase(
-            Some(&target_branch),
-            Some(&main_branch),
-            None,
-            Some(&mut rebase_opts),
-        )
-        .unwrap();
+            .checkout_options(checkout_options)
+            .merge_options(merge_options);
+        let mut rebase = repo
+            .rebase(
+                Some(&target_branch),
+                Some(&main_branch),
+                None,
+                Some(&mut rebase_opts),
+            )
+            .unwrap();
+        let sig = repo.signature().unwrap();
+        let mut current_commit: Option<Oid> = None;
+        loop {
+            let change = rebase.next();
+            if change.is_none() {
+                rebase.finish(None).unwrap();
+                if let Some(commit) = current_commit {
+                    let mut branch_ref = repo.find_branch("main", BranchType::Local).unwrap();
+                    branch_ref
+                        .get_mut()
+                        .set_target(commit, "update db")
+                        .unwrap();
+                };
+                break;
+            }
+            current_commit = Some(rebase.commit(None, &sig, None).unwrap());
+        }
     }
 
     fn make_tree<'a>(
@@ -251,15 +299,6 @@ impl Collection {
                 panic!("This shouldn't have happened");
             }
         }
-    }
-
-    pub fn set(
-        &self,
-        key: &str,
-        value: &[u8],
-        target: OperationTarget,
-    ) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>> {
-        self.set_batch([(key, value)], target)
     }
 
     pub fn revert_to_commit(&self, commit: Oid) {
@@ -494,6 +533,38 @@ mod tests {
         assert_eq!(
             db.get("b", OperationTarget::Transaction(&t)).unwrap(),
             b"b val"
+        );
+        db.apply_transaction(&t, crate::ConflictResolution::Overwrite);
+        assert_eq!(db.get("b", OperationTarget::Main).unwrap(), b"b val");
+    }
+
+    #[test]
+    fn test_transaction_overwrite() {
+        let (db, _td) = create_db();
+        db.set("a", b"line1v0\nline2v0", OperationTarget::Main);
+        let t = db.new_transaction(None);
+        db.set(
+            "a",
+            b"line1vTRANSACTION_CHANGE\nline2v0",
+            OperationTarget::Transaction(&t),
+        );
+        db.set(
+            "a",
+            b"line1vMAINLINE_CHANGE\nline2v0",
+            OperationTarget::Main,
+        );
+        assert_eq!(
+            db.get("a", OperationTarget::Main).unwrap(),
+            b"line1vMAINLINE_CHANGE\nline2v0"
+        );
+        assert_eq!(
+            db.get("a", OperationTarget::Transaction(&t)).unwrap(),
+            b"line1vTRANSACTION_CHANGE\nline2v0"
+        );
+        db.apply_transaction(&t, crate::ConflictResolution::Overwrite);
+        assert_eq!(
+            db.get("a", OperationTarget::Main).unwrap(),
+            b"line1vTRANSACTION_CHANGE\nline2v0"
         );
     }
 }
