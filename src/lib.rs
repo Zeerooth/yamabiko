@@ -5,8 +5,8 @@ use std::{collections::HashMap, path::Path};
 use blake3;
 use git2::build::CheckoutBuilder;
 use git2::{
-    BranchType, Commit, MergeOptions, Oid, RebaseOptions, Repository, Signature, Time, Tree,
-    TreeBuilder,
+    BranchType, Commit, FileFavor, MergeOptions, Oid, RebaseOptions, Repository, Signature, Time,
+    Tree, TreeBuilder,
 };
 use rand::distributions::Alphanumeric;
 use rand::prelude::*;
@@ -145,30 +145,7 @@ impl Collection {
         }
         drop(commit);
         drop(repo);
-        let mut remote_push_results = HashMap::new();
-        let mut rng = rand::thread_rng();
-        for replica in &self.replicas {
-            let replicate = match replica.replication_method {
-                replica::ReplicationMethod::All => true,
-                replica::ReplicationMethod::Random(chance) => {
-                    let rand_result: f64 = rng.gen();
-                    rand_result > chance
-                }
-                _ => true,
-            };
-            if !replicate {
-                continue;
-            }
-            let data = Arc::clone(&self.repository);
-            let replica_remote = replica.remote.clone();
-            let task = self.handle.spawn(async move {
-                let repo = data.lock().unwrap();
-                let mut remote = repo.find_remote(&replica_remote).unwrap();
-                remote.push(&["refs/heads/main"], None)
-            });
-            remote_push_results.insert(replica.remote.clone(), task);
-        }
-        remote_push_results
+        self.replicate()
     }
 
     pub fn set(
@@ -215,10 +192,12 @@ impl Collection {
         let mut merge_options = MergeOptions::new();
         match conflict_resolution {
             ConflictResolution::DiscardChanges => {
-                checkout_options.use_theirs(true);
+                checkout_options.use_ours(true);
+                merge_options.file_favor(FileFavor::Ours);
             }
             ConflictResolution::Overwrite => {
-                checkout_options.use_ours(true);
+                checkout_options.use_theirs(true);
+                merge_options.file_favor(FileFavor::Theirs);
             }
             ConflictResolution::Abort => {
                 merge_options.fail_on_conflict(true);
@@ -252,8 +231,38 @@ impl Collection {
                 };
                 break;
             }
-            current_commit = Some(rebase.commit(None, &sig, None).unwrap());
+            if let Ok(com) = rebase.commit(None, &sig, None) {
+                current_commit = Some(com);
+            }
         }
+        repo.find_branch(name.as_ref(), BranchType::Local)
+            .unwrap()
+            .delete()
+            .unwrap();
+    }
+
+    fn replicate(&self) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>> {
+        let mut remote_push_results = HashMap::new();
+        let rand_res: f64 = rand::thread_rng().gen();
+        for replica in &self.replicas {
+            let replicate = match replica.replication_method {
+                replica::ReplicationMethod::All => true,
+                replica::ReplicationMethod::Random(chance) => rand_res > chance,
+                _ => true,
+            };
+            if !replicate {
+                continue;
+            }
+            let data = Arc::clone(&self.repository);
+            let replica_remote = replica.remote.clone();
+            let task = self.handle.spawn(async move {
+                let repo = data.lock().unwrap();
+                let mut remote = repo.find_remote(&replica_remote).unwrap();
+                remote.push(&["refs/heads/main"], None)
+            });
+            remote_push_results.insert(replica.remote.clone(), task);
+        }
+        remote_push_results
     }
 
     fn make_tree<'a>(
@@ -541,30 +550,32 @@ mod tests {
     #[test]
     fn test_transaction_overwrite() {
         let (db, _td) = create_db();
-        db.set("a", b"line1v0\nline2v0", OperationTarget::Main);
+        db.set("a", b"INIT\nline2", OperationTarget::Main);
         let t = db.new_transaction(None);
-        db.set(
-            "a",
-            b"line1vTRANSACTION_CHANGE\nline2v0",
-            OperationTarget::Transaction(&t),
-        );
-        db.set(
-            "a",
-            b"line1vMAINLINE_CHANGE\nline2v0",
-            OperationTarget::Main,
-        );
-        assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap(),
-            b"line1vMAINLINE_CHANGE\nline2v0"
-        );
+        db.set("a", b"TRAN\nline2", OperationTarget::Transaction(&t));
+        db.set("a", b"MAIN\nline2", OperationTarget::Main);
+        assert_eq!(db.get("a", OperationTarget::Main).unwrap(), b"MAIN\nline2");
         assert_eq!(
             db.get("a", OperationTarget::Transaction(&t)).unwrap(),
-            b"line1vTRANSACTION_CHANGE\nline2v0"
+            b"TRAN\nline2"
         );
         db.apply_transaction(&t, crate::ConflictResolution::Overwrite);
+        assert_eq!(db.get("a", OperationTarget::Main).unwrap(), b"TRAN\nline2");
+    }
+
+    #[test]
+    fn test_transaction_discard() {
+        let (db, _td) = create_db();
+        db.set("a", b"INIT\nline2", OperationTarget::Main);
+        let t = db.new_transaction(None);
+        db.set("a", b"TRAN\nline2", OperationTarget::Transaction(&t));
+        db.set("a", b"MAIN\nline2", OperationTarget::Main);
+        assert_eq!(db.get("a", OperationTarget::Main).unwrap(), b"MAIN\nline2");
         assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap(),
-            b"line1vTRANSACTION_CHANGE\nline2v0"
+            db.get("a", OperationTarget::Transaction(&t)).unwrap(),
+            b"TRAN\nline2"
         );
+        db.apply_transaction(&t, crate::ConflictResolution::DiscardChanges);
+        assert_eq!(db.get("a", OperationTarget::Main).unwrap(), b"MAIN\nline2");
     }
 }
