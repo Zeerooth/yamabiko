@@ -1,14 +1,18 @@
 use std::collections::HashMap;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use yamabiko::test::create_db;
+use yamabiko::{test::create_db, OperationTarget};
 
 fn bench_sets(bench: &mut Criterion) {
     bench.bench_function("sets on empty db", |b| {
         let (db, _td) = create_db();
         let mut i = 0;
         b.iter(|| {
-            db.set(format!("key-{}", i).as_str(), b"some value");
+            db.set(
+                format!("key-{}", i).as_str(),
+                b"some value",
+                OperationTarget::Main,
+            );
             i += 1;
         })
     });
@@ -19,10 +23,14 @@ fn bench_sets(bench: &mut Criterion) {
         let hm2 = hm
             .iter()
             .map(|x| (format!("key-{}", x), "some value".as_bytes()));
-        db.set_batch(hm2);
+        db.set_batch(hm2, OperationTarget::Main);
         let mut i = INIT_DB_SIZE;
         b.iter(|| {
-            db.set(format!("key-{}", i).as_str(), b"some value");
+            db.set(
+                format!("key-{}", i).as_str(),
+                b"some value",
+                OperationTarget::Main,
+            );
             i += 1;
         })
     });
@@ -34,7 +42,7 @@ fn bench_sets(bench: &mut Criterion) {
             for x in 0..100 {
                 hm.insert(format!("key-{}", x + i), "some value".as_bytes());
             }
-            db.set_batch(hm);
+            db.set_batch(hm, OperationTarget::Main);
             i += 100;
         });
     });
@@ -45,8 +53,12 @@ fn bench_sets_and_gets(bench: &mut Criterion) {
         let (db, _td) = create_db();
         let mut i = 0;
         b.iter(|| {
-            db.set(format!("key-{}", i).as_str(), b"some value");
-            db.get(format!("key-{}", i).as_str());
+            db.set(
+                format!("key-{}", i).as_str(),
+                b"some value",
+                OperationTarget::Main,
+            );
+            db.get(format!("key-{}", i).as_str(), OperationTarget::Main);
             i += 1;
         })
     });
@@ -57,11 +69,15 @@ fn bench_sets_and_gets(bench: &mut Criterion) {
         let hm2 = hm
             .iter()
             .map(|x| (format!("key-{}", x), "some value".as_bytes()));
-        db.set_batch(hm2);
+        db.set_batch(hm2, OperationTarget::Main);
         let mut i = INIT_DB_SIZE;
         b.iter(|| {
-            db.set(format!("key-{}", i).as_str(), b"some value");
-            db.get(format!("key-{}", i).as_str());
+            db.set(
+                format!("key-{}", i).as_str(),
+                b"some value",
+                OperationTarget::Main,
+            );
+            db.get(format!("key-{}", i).as_str(), OperationTarget::Main);
             i += 1;
         })
     });

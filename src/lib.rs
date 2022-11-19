@@ -1,5 +1,5 @@
 use std::str;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::{collections::HashMap, path::Path};
 
 use blake3;
@@ -8,6 +8,7 @@ use git2::{
     BranchType, Commit, FileFavor, MergeOptions, Oid, RebaseOptions, Repository, Signature, Time,
     Tree, TreeBuilder,
 };
+use parking_lot::{Mutex, MutexGuard};
 use rand::distributions::Alphanumeric;
 use rand::prelude::*;
 use tokio::runtime::{Handle, Runtime};
@@ -33,53 +34,46 @@ pub struct Collection {
 }
 
 impl Collection {
-    pub fn load(path: &Path) -> Self {
-        Self {
-            repository: Arc::new(Mutex::new(Repository::open(path).unwrap())),
+    pub fn load(path: &Path) -> Result<Self, error::CollectionInitError> {
+        Ok(Self {
+            repository: Arc::new(Mutex::new(Repository::open(path)?)),
             replicas: Vec::new(),
             handle: Collection::get_runtime_handle().0,
-        }
+        })
     }
 
-    pub fn create(path: &Path) -> Self {
+    pub fn create(path: &Path) -> Result<Self, error::CollectionInitError> {
         let repo = Repository::init_bare(path).unwrap();
         {
-            let index = &mut repo.index().unwrap();
-            let id = index.write_tree().unwrap();
-            let tree = repo.find_tree(id).unwrap();
-            let sig = repo.signature().unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
-                .unwrap();
-            let head = repo.head().unwrap().target().unwrap();
-            let head_commit = repo.find_commit(head).unwrap();
-            repo.branch("main", &head_commit, true).unwrap();
+            let index = &mut repo.index()?;
+            let id = index.write_tree()?;
+            let tree = repo.find_tree(id)?;
+            let sig = repo.signature()?;
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])?;
+            let head = repo.head()?.target().unwrap();
+            let head_commit = repo.find_commit(head)?;
+            repo.branch("main", &head_commit, true)?;
         }
-        Self {
+        Ok(Self {
             repository: Arc::new(Mutex::new(repo)),
             replicas: Vec::new(),
             handle: Collection::get_runtime_handle().0,
-        }
+        })
     }
 
-    pub fn add_replica<S>(
+    pub fn add_replica(
         &mut self,
-        name: S,
-        url: S,
+        name: &str,
+        url: &str,
         replication_method: replica::ReplicationMethod,
-    ) where
-        S: AsRef<str>,
-    {
-        if self
-            .replicas
-            .iter()
-            .any(|x| x.remote.as_str() == name.as_ref())
-        {
+    ) {
+        if self.replicas.iter().any(|x| x.remote.as_str() == name) {
             return;
         }
-        let repo = self.repository.lock().unwrap();
+        let repo = self.repository.lock();
         let remote = repo
             .find_remote(name.as_ref())
-            .unwrap_or_else(|_| repo.remote(name.as_ref(), url.as_ref()).unwrap());
+            .unwrap_or_else(|_| repo.remote(name, url).unwrap());
         self.replicas.push(replica::Replica {
             remote: remote.name().unwrap().to_string(),
             replication_method,
@@ -92,7 +86,7 @@ impl Collection {
             OperationTarget::Main => "main",
             OperationTarget::Transaction(t) => t,
         };
-        let repo = self.repository.lock().unwrap();
+        let repo = self.repository.lock();
         let tree_entry = Collection::current_commit(&repo, branch)
             .tree()
             .unwrap()
@@ -114,7 +108,7 @@ impl Collection {
         I: IntoIterator<Item = (T, &'a [u8])>,
         T: AsRef<str>,
     {
-        let repo = self.repository.lock().unwrap();
+        let repo = self.repository.lock();
         let branch = match target {
             OperationTarget::Main => "main",
             OperationTarget::Transaction(t) => t,
@@ -126,11 +120,11 @@ impl Collection {
                 let blob = repo.blob(value).unwrap();
                 let hash = blake3::hash(key.as_ref().as_bytes());
                 let trees =
-                    Collection::make_tree(&repo, hash.as_bytes(), &root_tree, key.as_ref(), blob);
+                    Collection::make_tree(&repo, hash.as_bytes(), &root_tree, key.as_ref(), blob)
+                        .unwrap();
                 root_tree = repo.find_tree(trees).unwrap();
             }
-            let current_time = &Time::new(chrono::Utc::now().timestamp(), 0);
-            let signature = Signature::new("test", "test", current_time).unwrap();
+            let signature = self.signature();
             let new_commit = repo
                 .commit_create_buffer(&signature, &signature, "update db", &root_tree, &[&commit])
                 .unwrap();
@@ -158,7 +152,7 @@ impl Collection {
     }
 
     pub fn new_transaction(&self, name: Option<&str>) -> String {
-        let repo = self.repository.lock().unwrap();
+        let repo = self.repository.lock();
         let head = repo.head().unwrap().target().unwrap();
         let head_commit = repo.find_commit(head).unwrap();
         let transaction_name = name.map(|n| n.to_string()).unwrap_or_else(|| {
@@ -179,7 +173,7 @@ impl Collection {
     where
         S: AsRef<str>,
     {
-        let repo = self.repository.lock().unwrap();
+        let repo = self.repository.lock();
         let main_branch = repo
             .find_annotated_commit(Collection::current_commit(&repo, "main").id())
             .unwrap();
@@ -216,7 +210,6 @@ impl Collection {
                 Some(&mut rebase_opts),
             )
             .unwrap();
-        let sig = repo.signature().unwrap();
         let mut current_commit: Option<Oid> = None;
         loop {
             let change = rebase.next();
@@ -231,7 +224,7 @@ impl Collection {
                 };
                 break;
             }
-            if let Ok(com) = rebase.commit(None, &sig, None) {
+            if let Ok(com) = rebase.commit(None, &self.signature(), None) {
                 current_commit = Some(com);
             }
         }
@@ -256,7 +249,7 @@ impl Collection {
             let data = Arc::clone(&self.repository);
             let replica_remote = replica.remote.clone();
             let task = self.handle.spawn(async move {
-                let repo = data.lock().unwrap();
+                let repo = data.lock();
                 let mut remote = repo.find_remote(&replica_remote).unwrap();
                 remote.push(&["refs/heads/main"], None)
             });
@@ -271,7 +264,7 @@ impl Collection {
         root_tree: &'a Tree,
         key: &str,
         blob: Oid,
-    ) -> Oid {
+    ) -> Result<Oid, git2::Error> {
         let mut trees: Vec<TreeBuilder> = vec![repo.treebuilder(Some(root_tree)).unwrap()];
         for part in 0..2 {
             let parent_tree = trees.pop().unwrap();
@@ -279,13 +272,10 @@ impl Collection {
             let mut tree_builder = parent_tree
                 .get(format!("{octal_part:o}"))
                 .unwrap()
-                .map(|x| {
-                    repo.treebuilder(Some(&x.to_object(&repo).unwrap().into_tree().unwrap()))
-                        .unwrap()
-                })
-                .unwrap_or_else(|| repo.treebuilder(None).unwrap());
+                .map(|x| repo.treebuilder(Some(&x.to_object(&repo).unwrap().into_tree().unwrap())))
+                .unwrap_or_else(|| repo.treebuilder(None))?;
             if part == 1 {
-                tree_builder.insert(key, blob, 0o100644).unwrap();
+                tree_builder.insert(key, blob, 0o100644)?;
             }
             trees.push(parent_tree);
             trees.push(tree_builder);
@@ -294,24 +284,23 @@ impl Collection {
         loop {
             if let Some(self_tree) = trees.pop() {
                 if let Some(mut parent_tree) = trees.pop() {
-                    let tree_id = self_tree.write().unwrap();
+                    let tree_id = self_tree.write()?;
                     index -= 1;
                     let octal_part = oid[index];
-                    parent_tree
-                        .insert(format!("{octal_part:o}"), tree_id, 0o040000)
-                        .unwrap();
+                    parent_tree.insert(format!("{octal_part:o}"), tree_id, 0o040000)?;
                     trees.push(parent_tree);
                 } else {
-                    return self_tree.write().unwrap();
+                    return Ok(self_tree.write()?);
                 }
             } else {
+                // TODO: what to do in that case?
                 panic!("This shouldn't have happened");
             }
         }
     }
 
     pub fn revert_to_commit(&self, commit: Oid) {
-        let repo = self.repository.lock().unwrap();
+        let repo = self.repository.lock();
         let target_commit = repo.find_commit(commit).unwrap();
         repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)
             .unwrap();
@@ -321,17 +310,18 @@ impl Collection {
         if n == 0 {
             return Ok(());
         }
-        let repo = self.repository.lock().unwrap();
+        let repo = self.repository.lock();
         let head = repo.head().unwrap().target().unwrap();
         let mut target_commit = repo.find_commit(head).unwrap();
         for _ in 0..n {
             if target_commit.parent_count() > 1 {
                 return Err(error::RevertError::BranchingHistory { commit: head });
+            } else if target_commit.parent_count() == 0 {
+                break;
             }
-            target_commit = target_commit.parent(0).unwrap();
+            target_commit = target_commit.parent(0)?;
         }
-        repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)
-            .unwrap();
+        repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)?;
         Ok(())
     }
 
@@ -365,6 +355,11 @@ impl Collection {
                 (rt.handle().clone(), Some(rt))
             }
         }
+    }
+
+    fn signature(&self) -> Signature {
+        let current_time = &Time::new(chrono::Utc::now().timestamp(), 0);
+        Signature::new("yamabiko", "yamabiko", current_time).unwrap()
     }
 }
 
@@ -486,7 +481,6 @@ mod tests {
         let (_, _td_backup) = create_db();
         db.repository
             .lock()
-            .unwrap()
             .remote("test", _td_backup.path().to_str().unwrap())
             .unwrap();
         db.add_replica(
