@@ -23,3 +23,17 @@ impl From<GitErr> for RevertError {
         Self::InternalGitError(err)
     }
 }
+
+#[derive(Debug)]
+pub enum GetObjectError {
+    InvalidOperationTarget,
+    CorruptedObject,
+    InvalidPathToKey(GitErr),
+    InternalGitError(GitErr),
+}
+
+impl From<GitErr> for GetObjectError {
+    fn from(err: GitErr) -> Self {
+        Self::InternalGitError(err)
+    }
+}

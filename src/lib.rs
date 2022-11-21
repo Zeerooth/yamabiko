@@ -5,8 +5,8 @@ use std::{collections::HashMap, path::Path};
 use blake3;
 use git2::build::CheckoutBuilder;
 use git2::{
-    BranchType, Commit, FileFavor, MergeOptions, Oid, RebaseOptions, Repository, Signature, Time,
-    Tree, TreeBuilder,
+    BranchType, Commit, ErrorCode, FileFavor, MergeOptions, Oid, RebaseOptions, Repository,
+    Signature, Time, Tree, TreeBuilder,
 };
 use parking_lot::{Mutex, MutexGuard};
 use rand::distributions::Alphanumeric;
@@ -80,23 +80,35 @@ impl Collection {
         });
     }
 
-    pub fn get(&self, key: &str, target: OperationTarget) -> Option<Vec<u8>> {
+    pub fn get(
+        &self,
+        key: &str,
+        target: OperationTarget,
+    ) -> Result<Option<Vec<u8>>, error::GetObjectError> {
         let path = Self::construct_path_to_key(key);
         let branch = match target {
             OperationTarget::Main => "main",
             OperationTarget::Transaction(t) => t,
         };
         let repo = self.repository.lock();
-        let tree_entry = Collection::current_commit(&repo, branch)
+        let tree_path = Collection::current_commit(&repo, branch)
+            .map_err(|e| match e.code() {
+                ErrorCode::NotFound => error::GetObjectError::InvalidOperationTarget,
+                _ => e.into(),
+            })?
             .tree()
             .unwrap()
             .get_path(Path::new(&path))
-            .ok()?
-            .to_object(&repo)
-            .unwrap();
-        let blob = tree_entry.as_blob().unwrap();
-        let blob_content = blob.content();
-        Some(blob_content.to_vec())
+            .ok();
+        if let Some(tree_entry) = tree_path {
+            let obj = tree_entry.to_object(&repo)?;
+            let blob = obj
+                .as_blob()
+                .ok_or_else(|| error::GetObjectError::CorruptedObject)?;
+            let blob_content = blob.content();
+            return Ok(Some(blob_content.to_vec()));
+        };
+        Ok(None)
     }
 
     pub fn set_batch<'a, I, T>(
@@ -113,7 +125,7 @@ impl Collection {
             OperationTarget::Main => "main",
             OperationTarget::Transaction(t) => t,
         };
-        let commit = Collection::current_commit(&repo, branch);
+        let commit = Collection::current_commit(&repo, branch).unwrap();
         {
             let mut root_tree = commit.tree().unwrap();
             for (key, value) in items {
@@ -175,10 +187,14 @@ impl Collection {
     {
         let repo = self.repository.lock();
         let main_branch = repo
-            .find_annotated_commit(Collection::current_commit(&repo, "main").id())
+            .find_annotated_commit(Collection::current_commit(&repo, "main").unwrap().id())
             .unwrap();
         let target_branch = repo
-            .find_annotated_commit(Collection::current_commit(&repo, name.as_ref()).id())
+            .find_annotated_commit(
+                Collection::current_commit(&repo, name.as_ref())
+                    .unwrap()
+                    .id(),
+            )
             .unwrap();
         let mut checkout_options = CheckoutBuilder::new();
         checkout_options.force();
@@ -325,13 +341,15 @@ impl Collection {
         Ok(())
     }
 
-    fn current_commit<'a>(repo: &'a MutexGuard<Repository>, branch: &str) -> Commit<'a> {
+    fn current_commit<'a>(
+        repo: &'a MutexGuard<Repository>,
+        branch: &str,
+    ) -> Result<Commit<'a>, git2::Error> {
         let reference = repo
-            .find_branch(branch.as_ref(), BranchType::Local)
-            .unwrap()
+            .find_branch(branch.as_ref(), BranchType::Local)?
             .into_reference();
-        let commit = reference.peel_to_commit().unwrap();
-        commit
+        let commit = reference.peel_to_commit()?;
+        Ok(commit)
     }
 
     fn construct_path_to_key(key: &str) -> String {
@@ -380,7 +398,7 @@ mod tests {
         let (db, _td) = create_db();
         db.set("key", "value".as_bytes(), OperationTarget::Main);
         assert_eq!(
-            db.get("key", OperationTarget::Main).unwrap(),
+            db.get("key", OperationTarget::Main).unwrap().unwrap(),
             "value".as_bytes()
         );
     }
@@ -395,21 +413,21 @@ mod tests {
         let mut hm2 = hm.clone();
         db.set_batch(hm, OperationTarget::Main);
         assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap(),
+            db.get("a", OperationTarget::Main).unwrap().unwrap(),
             "initial a value".as_bytes()
         );
         assert_eq!(
-            db.get("b", OperationTarget::Main).unwrap(),
+            db.get("b", OperationTarget::Main).unwrap().unwrap(),
             "initial b value".as_bytes()
         );
         assert_eq!(
-            db.get("c", OperationTarget::Main).unwrap(),
+            db.get("c", OperationTarget::Main).unwrap().unwrap(),
             "initial c value".as_bytes()
         );
         hm2.insert("a", "changed a value".as_bytes());
         db.set_batch(hm2, OperationTarget::Main);
         assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap(),
+            db.get("a", OperationTarget::Main).unwrap().unwrap(),
             "changed a value".as_bytes()
         );
     }
@@ -417,7 +435,7 @@ mod tests {
     #[test]
     fn get_non_existent_value() {
         let (db, _td) = create_db();
-        assert_eq!(db.get("key", OperationTarget::Main), None);
+        assert_eq!(db.get("key", OperationTarget::Main).unwrap(), None);
     }
 
     #[test]
@@ -427,12 +445,12 @@ mod tests {
         db.set("b", b"initial b value", OperationTarget::Main);
         db.set("b", b"changed b value", OperationTarget::Main);
         assert_eq!(
-            db.get("b", OperationTarget::Main).unwrap(),
+            db.get("b", OperationTarget::Main).unwrap().unwrap(),
             b"changed b value"
         );
         db.revert_n_commits(1).unwrap();
         assert_eq!(
-            db.get("b", OperationTarget::Main).unwrap(),
+            db.get("b", OperationTarget::Main).unwrap().unwrap(),
             b"initial b value"
         );
     }
@@ -443,7 +461,10 @@ mod tests {
         db.set("a", b"initial a value", OperationTarget::Main);
         db.set("a", b"change #1", OperationTarget::Main);
         db.set("a", b"change #2", OperationTarget::Main);
-        assert_eq!(db.get("a", OperationTarget::Main).unwrap(), b"change #2");
+        assert_eq!(
+            db.get("a", OperationTarget::Main).unwrap().unwrap(),
+            b"change #2"
+        );
         let repo = Repository::open(td.path()).unwrap();
         let reference = repo
             .find_branch("main", BranchType::Local)
@@ -453,7 +474,7 @@ mod tests {
         let first_commit = head_commit.parent(0).unwrap().parent(0).unwrap().clone();
         db.revert_to_commit(first_commit.id());
         assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap(),
+            db.get("a", OperationTarget::Main).unwrap().unwrap(),
             b"initial a value"
         );
     }
@@ -506,7 +527,7 @@ mod tests {
             value.await.unwrap().unwrap();
         }
         assert_eq!(
-            db_backup.get("a", OperationTarget::Main).unwrap(),
+            db_backup.get("a", OperationTarget::Main).unwrap().unwrap(),
             b"a value"
         );
     }
@@ -532,13 +553,18 @@ mod tests {
         db.set("a", b"a val", OperationTarget::Main);
         let t = db.new_transaction(None);
         db.set("b", b"b val", OperationTarget::Transaction(&t));
-        assert_eq!(db.get("b", OperationTarget::Main), None);
+        assert_eq!(db.get("b", OperationTarget::Main).unwrap(), None);
         assert_eq!(
-            db.get("b", OperationTarget::Transaction(&t)).unwrap(),
+            db.get("b", OperationTarget::Transaction(&t))
+                .unwrap()
+                .unwrap(),
             b"b val"
         );
         db.apply_transaction(&t, crate::ConflictResolution::Overwrite);
-        assert_eq!(db.get("b", OperationTarget::Main).unwrap(), b"b val");
+        assert_eq!(
+            db.get("b", OperationTarget::Main).unwrap().unwrap(),
+            b"b val"
+        );
     }
 
     #[test]
@@ -548,13 +574,21 @@ mod tests {
         let t = db.new_transaction(None);
         db.set("a", b"TRAN\nline2", OperationTarget::Transaction(&t));
         db.set("a", b"MAIN\nline2", OperationTarget::Main);
-        assert_eq!(db.get("a", OperationTarget::Main).unwrap(), b"MAIN\nline2");
         assert_eq!(
-            db.get("a", OperationTarget::Transaction(&t)).unwrap(),
+            db.get("a", OperationTarget::Main).unwrap().unwrap(),
+            b"MAIN\nline2"
+        );
+        assert_eq!(
+            db.get("a", OperationTarget::Transaction(&t))
+                .unwrap()
+                .unwrap(),
             b"TRAN\nline2"
         );
         db.apply_transaction(&t, crate::ConflictResolution::Overwrite);
-        assert_eq!(db.get("a", OperationTarget::Main).unwrap(), b"TRAN\nline2");
+        assert_eq!(
+            db.get("a", OperationTarget::Main).unwrap().unwrap(),
+            b"TRAN\nline2"
+        );
     }
 
     #[test]
@@ -564,12 +598,20 @@ mod tests {
         let t = db.new_transaction(None);
         db.set("a", b"TRAN\nline2", OperationTarget::Transaction(&t));
         db.set("a", b"MAIN\nline2", OperationTarget::Main);
-        assert_eq!(db.get("a", OperationTarget::Main).unwrap(), b"MAIN\nline2");
         assert_eq!(
-            db.get("a", OperationTarget::Transaction(&t)).unwrap(),
+            db.get("a", OperationTarget::Main).unwrap().unwrap(),
+            b"MAIN\nline2"
+        );
+        assert_eq!(
+            db.get("a", OperationTarget::Transaction(&t))
+                .unwrap()
+                .unwrap(),
             b"TRAN\nline2"
         );
         db.apply_transaction(&t, crate::ConflictResolution::DiscardChanges);
-        assert_eq!(db.get("a", OperationTarget::Main).unwrap(), b"MAIN\nline2");
+        assert_eq!(
+            db.get("a", OperationTarget::Main).unwrap().unwrap(),
+            b"MAIN\nline2"
+        );
     }
 }
