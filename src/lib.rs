@@ -98,8 +98,7 @@ impl<'c> Collection<'c> {
                 ErrorCode::NotFound => error::GetObjectError::InvalidOperationTarget,
                 _ => e.into(),
             })?
-            .tree()
-            .unwrap()
+            .tree()?
             .get_path(Path::new(&path))
             .ok();
         if let Some(tree_entry) = tree_path {
@@ -165,10 +164,10 @@ impl<'c> Collection<'c> {
         self.set_batch([(key, value)], target)
     }
 
-    pub fn new_transaction(&self, name: Option<&str>) -> String {
+    pub fn new_transaction(&self, name: Option<&str>) -> Result<String, git2::Error> {
         let repo = self.repository.lock();
-        let head = repo.head().unwrap().target().unwrap();
-        let head_commit = repo.find_commit(head).unwrap();
+        let head = repo.head()?.target().unwrap();
+        let head_commit = repo.find_commit(head)?;
         let transaction_name = name.map(|n| n.to_string()).unwrap_or_else(|| {
             format!(
                 "t-{}",
@@ -179,25 +178,25 @@ impl<'c> Collection<'c> {
                     .collect::<String>()
             )
         });
-        repo.branch(&transaction_name, &head_commit, true).unwrap();
-        transaction_name
+        repo.branch(&transaction_name, &head_commit, false)?;
+        Ok(transaction_name)
     }
 
-    pub fn apply_transaction<S>(&self, name: S, conflict_resolution: ConflictResolution)
-    where
-        S: AsRef<str>,
-    {
+    pub fn apply_transaction(
+        &self,
+        name: &str,
+        conflict_resolution: ConflictResolution,
+    ) -> Result<(), error::TransactionError> {
         let repo = self.repository.lock();
         let main_branch = repo
-            .find_annotated_commit(Collection::current_commit(&repo, "main").unwrap().id())
+            .find_annotated_commit(Collection::current_commit(&repo, "main")?.id())
             .unwrap();
-        let target_branch = repo
-            .find_annotated_commit(
-                Collection::current_commit(&repo, name.as_ref())
-                    .unwrap()
-                    .id(),
-            )
-            .unwrap();
+        let transaction =
+            Collection::current_commit(&repo, name).map_err(|err| match err.code() {
+                ErrorCode::NotFound => error::TransactionError::TransactionNotFound,
+                _ => err.into(),
+            })?;
+        let target_branch = repo.find_annotated_commit(transaction.id())?;
         let mut checkout_options = CheckoutBuilder::new();
         checkout_options.force();
         checkout_options.allow_conflicts(true);
@@ -212,7 +211,7 @@ impl<'c> Collection<'c> {
                 merge_options.file_favor(FileFavor::Theirs);
             }
             ConflictResolution::Abort => {
-                merge_options.fail_on_conflict(true);
+                // merge_options.fail_on_conflict(true);
             }
         }
         let mut rebase_options = RebaseOptions::new();
@@ -242,14 +241,26 @@ impl<'c> Collection<'c> {
                 };
                 break;
             }
-            if let Ok(com) = rebase.commit(None, &self.signature(), None) {
-                current_commit = Some(com);
+            match rebase.commit(None, &self.signature(), None) {
+                Ok(com) => current_commit = Some(com),
+                Err(err) => match err.code() {
+                    ErrorCode::Applied => {}
+                    ErrorCode::MergeConflict | ErrorCode::Unmerged => match conflict_resolution {
+                        ConflictResolution::Abort => {
+                            rebase.abort()?;
+                            return Err(error::TransactionError::Aborted);
+                        }
+                        _ => return Err(err.into()),
+                    },
+                    _ => return Err(err.into()),
+                },
             }
         }
-        repo.find_branch(name.as_ref(), BranchType::Local)
+        repo.find_branch(name, BranchType::Local)
             .unwrap()
             .delete()
             .unwrap();
+        Ok(())
     }
 
     fn replicate(&self) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>> {
@@ -268,7 +279,7 @@ impl<'c> Collection<'c> {
             let replica_remote = replica.remote.clone();
             let task = self.handle.spawn(async move {
                 let repo = data.lock();
-                let mut remote = repo.find_remote(&replica_remote).unwrap();
+                let mut remote = repo.find_remote(&replica_remote)?;
                 remote.push(&["refs/heads/main"], None)
             });
             remote_push_results.insert(replica.remote.clone(), task);
@@ -283,7 +294,7 @@ impl<'c> Collection<'c> {
         key: &str,
         blob: Oid,
     ) -> Result<Oid, git2::Error> {
-        let mut trees: Vec<TreeBuilder> = vec![repo.treebuilder(Some(root_tree)).unwrap()];
+        let mut trees: Vec<TreeBuilder> = vec![repo.treebuilder(Some(root_tree))?];
         for part in 0..2 {
             let parent_tree = trees.pop().unwrap();
             let octal_part = oid[part];
@@ -300,28 +311,26 @@ impl<'c> Collection<'c> {
         }
         let mut index: usize = 2;
         loop {
-            if let Some(self_tree) = trees.pop() {
-                if let Some(mut parent_tree) = trees.pop() {
-                    let tree_id = self_tree.write()?;
-                    index -= 1;
-                    let octal_part = oid[index];
-                    parent_tree.insert(format!("{octal_part:o}"), tree_id, 0o040000)?;
-                    trees.push(parent_tree);
-                } else {
-                    return Ok(self_tree.write()?);
-                }
+            let self_tree = trees.pop().unwrap();
+            if let Some(mut parent_tree) = trees.pop() {
+                let tree_id = self_tree.write()?;
+                index -= 1;
+                let octal_part = oid[index];
+                parent_tree.insert(format!("{octal_part:o}"), tree_id, 0o040000)?;
+                trees.push(parent_tree);
             } else {
-                // TODO: what to do in that case?
-                panic!("This shouldn't have happened");
+                return Ok(self_tree.write()?);
             }
         }
     }
 
-    pub fn revert_to_commit(&self, commit: Oid) {
+    pub fn revert_to_commit(&self, commit: Oid) -> Result<(), error::RevertError> {
         let repo = self.repository.lock();
-        let target_commit = repo.find_commit(commit).unwrap();
-        repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)
-            .unwrap();
+        let target_commit = repo
+            .find_commit(commit)
+            .map_err(|_| error::RevertError::TargetCommitNotFound(commit))?;
+        repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)?;
+        Ok(())
     }
 
     pub fn revert_n_commits(&self, n: usize) -> Result<(), error::RevertError> {
@@ -329,11 +338,13 @@ impl<'c> Collection<'c> {
             return Ok(());
         }
         let repo = self.repository.lock();
-        let head = repo.head().unwrap().target().unwrap();
-        let mut target_commit = repo.find_commit(head).unwrap();
+        let head = repo.head()?.target().unwrap();
+        let mut target_commit = repo
+            .find_commit(head)
+            .map_err(|_| error::RevertError::TargetCommitNotFound(head))?;
         for _ in 0..n {
             if target_commit.parent_count() > 1 {
-                return Err(error::RevertError::BranchingHistory { commit: head });
+                return Err(error::RevertError::BranchingHistory(head));
             } else if target_commit.parent_count() == 0 {
                 break;
             }
@@ -391,7 +402,7 @@ mod tests {
 
     use git2::{BranchType, Repository};
 
-    use crate::{replica::ReplicationMethod, OperationTarget};
+    use crate::{error, replica::ReplicationMethod, OperationTarget};
 
     use super::test::*;
 
@@ -474,7 +485,7 @@ mod tests {
             .into_reference();
         let head_commit = reference.peel_to_commit().unwrap();
         let first_commit = head_commit.parent(0).unwrap().parent(0).unwrap().clone();
-        db.revert_to_commit(first_commit.id());
+        db.revert_to_commit(first_commit.id()).unwrap();
         assert_eq!(
             db.get("a", OperationTarget::Main).unwrap().unwrap(),
             b"initial a value"
@@ -558,7 +569,7 @@ mod tests {
     fn test_simple_transaction() {
         let (db, _td) = create_db();
         db.set("a", b"a val", OperationTarget::Main);
-        let t = db.new_transaction(None);
+        let t = db.new_transaction(None).unwrap();
         db.set("b", b"b val", OperationTarget::Transaction(&t));
         assert_eq!(db.get("b", OperationTarget::Main).unwrap(), None);
         assert_eq!(
@@ -567,7 +578,8 @@ mod tests {
                 .unwrap(),
             b"b val"
         );
-        db.apply_transaction(&t, crate::ConflictResolution::Overwrite);
+        db.apply_transaction(&t, crate::ConflictResolution::Overwrite)
+            .unwrap();
         assert_eq!(
             db.get("b", OperationTarget::Main).unwrap().unwrap(),
             b"b val"
@@ -578,7 +590,7 @@ mod tests {
     fn test_transaction_overwrite() {
         let (db, _td) = create_db();
         db.set("a", b"INIT\nline2", OperationTarget::Main);
-        let t = db.new_transaction(None);
+        let t = db.new_transaction(None).unwrap();
         db.set("a", b"TRAN\nline2", OperationTarget::Transaction(&t));
         db.set("a", b"MAIN\nline2", OperationTarget::Main);
         assert_eq!(
@@ -591,7 +603,8 @@ mod tests {
                 .unwrap(),
             b"TRAN\nline2"
         );
-        db.apply_transaction(&t, crate::ConflictResolution::Overwrite);
+        db.apply_transaction(&t, crate::ConflictResolution::Overwrite)
+            .unwrap();
         assert_eq!(
             db.get("a", OperationTarget::Main).unwrap().unwrap(),
             b"TRAN\nline2"
@@ -602,7 +615,7 @@ mod tests {
     fn test_transaction_discard() {
         let (db, _td) = create_db();
         db.set("a", b"INIT\nline2", OperationTarget::Main);
-        let t = db.new_transaction(None);
+        let t = db.new_transaction(None).unwrap();
         db.set("a", b"TRAN\nline2", OperationTarget::Transaction(&t));
         db.set("a", b"MAIN\nline2", OperationTarget::Main);
         assert_eq!(
@@ -615,7 +628,36 @@ mod tests {
                 .unwrap(),
             b"TRAN\nline2"
         );
-        db.apply_transaction(&t, crate::ConflictResolution::DiscardChanges);
+        db.apply_transaction(&t, crate::ConflictResolution::DiscardChanges)
+            .unwrap();
+        assert_eq!(
+            db.get("a", OperationTarget::Main).unwrap().unwrap(),
+            b"MAIN\nline2"
+        );
+    }
+
+    #[test]
+    fn test_transaction_abort() {
+        let (db, _td) = create_db();
+        db.set("a", b"INIT\nline2", OperationTarget::Main);
+        let t = db.new_transaction(None).unwrap();
+        db.set("a", b"TRAN\nline2", OperationTarget::Transaction(&t));
+        db.set("a", b"MAIN\nline2", OperationTarget::Main);
+        assert_eq!(
+            db.get("a", OperationTarget::Main).unwrap().unwrap(),
+            b"MAIN\nline2"
+        );
+        assert_eq!(
+            db.get("a", OperationTarget::Transaction(&t))
+                .unwrap()
+                .unwrap(),
+            b"TRAN\nline2"
+        );
+        assert_eq!(
+            db.apply_transaction(&t, crate::ConflictResolution::Abort)
+                .unwrap_err(),
+            error::TransactionError::Aborted
+        );
         assert_eq!(
             db.get("a", OperationTarget::Main).unwrap().unwrap(),
             b"MAIN\nline2"
