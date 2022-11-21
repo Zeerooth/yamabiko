@@ -5,8 +5,8 @@ use std::{collections::HashMap, path::Path};
 use blake3;
 use git2::build::CheckoutBuilder;
 use git2::{
-    BranchType, Commit, ErrorCode, FileFavor, MergeOptions, Oid, RebaseOptions, Repository,
-    Signature, Time, Tree, TreeBuilder,
+    BranchType, Commit, ErrorCode, FileFavor, MergeOptions, Oid, PushOptions, RebaseOptions,
+    Repository, Signature, Time, Tree, TreeBuilder,
 };
 use parking_lot::{Mutex, MutexGuard};
 use rand::distributions::Alphanumeric;
@@ -27,13 +27,13 @@ pub enum ConflictResolution {
     Abort,
 }
 
-pub struct Collection {
+pub struct Collection<'c> {
     repository: Arc<Mutex<Repository>>,
-    replicas: Vec<replica::Replica>,
+    replicas: Vec<replica::Replica<'c>>,
     handle: Handle,
 }
 
-impl Collection {
+impl<'c> Collection<'c> {
     pub fn load(path: &Path) -> Result<Self, error::CollectionInitError> {
         Ok(Self {
             repository: Arc::new(Mutex::new(Repository::open(path)?)),
@@ -66,6 +66,7 @@ impl Collection {
         name: &str,
         url: &str,
         replication_method: replica::ReplicationMethod,
+        push_options: Option<PushOptions<'c>>,
     ) {
         if self.replicas.iter().any(|x| x.remote.as_str() == name) {
             return;
@@ -77,6 +78,7 @@ impl Collection {
         self.replicas.push(replica::Replica {
             remote: remote.name().unwrap().to_string(),
             replication_method,
+            push_options,
         });
     }
 
@@ -487,11 +489,13 @@ mod tests {
             "test",
             _td_backup.path().to_str().unwrap(),
             ReplicationMethod::All,
+            None,
         );
         db.add_replica(
             "test",
             _td_backup.path().to_str().unwrap(),
             ReplicationMethod::All,
+            None,
         );
         assert_eq!(db.replicas.len(), 1);
     }
@@ -508,6 +512,7 @@ mod tests {
             "test",
             _td_backup.path().to_str().unwrap(),
             ReplicationMethod::All,
+            None,
         );
         assert_eq!(db.replicas.len(), 1);
     }
@@ -520,6 +525,7 @@ mod tests {
             "test",
             _td_backup.path().to_str().unwrap(),
             ReplicationMethod::All,
+            None,
         );
         assert_eq!(db.replicas.len(), 1);
         let result = db.set("a", b"a value", OperationTarget::Main);
@@ -539,6 +545,7 @@ mod tests {
             "test",
             "https://800.800.800.800/git.git",
             ReplicationMethod::All,
+            None,
         );
         assert_eq!(db.replicas.len(), 1);
         let result = db.set("a", b"a value", OperationTarget::Main);
