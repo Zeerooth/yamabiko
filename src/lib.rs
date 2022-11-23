@@ -11,10 +11,13 @@ use git2::{
 use parking_lot::{Mutex, MutexGuard};
 use rand::distributions::Alphanumeric;
 use rand::prelude::*;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use tokio::runtime::{Handle, Runtime};
 
 pub mod error;
 pub mod replica;
+pub mod serialization;
 
 pub enum OperationTarget<'a> {
     Main,
@@ -31,18 +34,26 @@ pub struct Collection<'c> {
     repository: Arc<Mutex<Repository>>,
     replicas: Vec<replica::Replica<'c>>,
     handle: Handle,
+    data_format: serialization::DataFormat,
 }
 
 impl<'c> Collection<'c> {
-    pub fn load(path: &Path) -> Result<Self, error::CollectionInitError> {
+    pub fn load(
+        path: &Path,
+        data_format: serialization::DataFormat,
+    ) -> Result<Self, error::CollectionInitError> {
         Ok(Self {
             repository: Arc::new(Mutex::new(Repository::open(path)?)),
             replicas: Vec::new(),
             handle: Collection::get_runtime_handle().0,
+            data_format,
         })
     }
 
-    pub fn create(path: &Path) -> Result<Self, error::CollectionInitError> {
+    pub fn create(
+        path: &Path,
+        data_format: serialization::DataFormat,
+    ) -> Result<Self, error::CollectionInitError> {
         let repo = Repository::init_bare(path).unwrap();
         {
             let index = &mut repo.index()?;
@@ -58,6 +69,7 @@ impl<'c> Collection<'c> {
             repository: Arc::new(Mutex::new(repo)),
             replicas: Vec::new(),
             handle: Collection::get_runtime_handle().0,
+            data_format,
         })
     }
 
@@ -82,11 +94,14 @@ impl<'c> Collection<'c> {
         });
     }
 
-    pub fn get(
+    pub fn get<D>(
         &self,
         key: &str,
         target: OperationTarget,
-    ) -> Result<Option<Vec<u8>>, error::GetObjectError> {
+    ) -> Result<Option<D>, error::GetObjectError>
+    where
+        D: DeserializeOwned,
+    {
         let path = Self::construct_path_to_key(key);
         let branch = match target {
             OperationTarget::Main => "main",
@@ -106,19 +121,23 @@ impl<'c> Collection<'c> {
             let blob = obj
                 .as_blob()
                 .ok_or_else(|| error::GetObjectError::CorruptedObject)?;
-            let blob_content = blob.content();
-            return Ok(Some(blob_content.to_vec()));
+            let blob_content = blob.content().to_owned();
+            return Ok(Some(
+                self.data_format
+                    .deserialize(str::from_utf8(&blob_content).unwrap()),
+            ));
         };
         Ok(None)
     }
 
-    pub fn set_batch<'a, I, T>(
+    pub fn set_batch<'a, S, I, T>(
         &self,
         items: I,
         target: OperationTarget,
     ) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>>
     where
-        I: IntoIterator<Item = (T, &'a [u8])>,
+        S: Serialize,
+        I: IntoIterator<Item = (T, S)>,
         T: AsRef<str>,
     {
         let repo = self.repository.lock();
@@ -130,7 +149,9 @@ impl<'c> Collection<'c> {
         {
             let mut root_tree = commit.tree().unwrap();
             for (key, value) in items {
-                let blob = repo.blob(value).unwrap();
+                let blob = repo
+                    .blob(self.data_format.serialize(value).as_bytes())
+                    .unwrap();
                 let hash = blake3::hash(key.as_ref().as_bytes());
                 let trees =
                     Collection::make_tree(&repo, hash.as_bytes(), &root_tree, key.as_ref(), blob)
@@ -155,12 +176,15 @@ impl<'c> Collection<'c> {
         self.replicate()
     }
 
-    pub fn set(
+    pub fn set<S>(
         &self,
         key: &str,
-        value: &[u8],
+        value: S,
         target: OperationTarget,
-    ) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>> {
+    ) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>>
+    where
+        S: Serialize,
+    {
         self.set_batch([(key, value)], target)
     }
 
@@ -409,10 +433,20 @@ mod tests {
     #[test]
     fn set_and_get() {
         let (db, _td) = create_db();
-        db.set("key", "value".as_bytes(), OperationTarget::Main);
+        db.set(
+            "key",
+            SampleDbStruct {
+                str_val: String::from("value"),
+            },
+            OperationTarget::Main,
+        );
         assert_eq!(
-            db.get("key", OperationTarget::Main).unwrap().unwrap(),
-            "value".as_bytes()
+            db.get::<SampleDbStruct>("key", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("value")
+            }
         );
     }
 
@@ -420,63 +454,126 @@ mod tests {
     fn batch_set_and_get() {
         let (db, _td) = create_db();
         let mut hm = HashMap::new();
-        hm.insert("a", "initial a value".as_bytes());
-        hm.insert("b", "initial b value".as_bytes());
-        hm.insert("c", "initial c value".as_bytes());
+        hm.insert(
+            "a",
+            SampleDbStruct {
+                str_val: String::from("initial a value"),
+            },
+        );
+        hm.insert(
+            "b",
+            SampleDbStruct {
+                str_val: String::from("initial b value"),
+            },
+        );
+        hm.insert(
+            "c",
+            SampleDbStruct {
+                str_val: String::from("initial c value"),
+            },
+        );
         let mut hm2 = hm.clone();
         db.set_batch(hm, OperationTarget::Main);
         assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap().unwrap(),
-            "initial a value".as_bytes()
+            db.get::<SampleDbStruct>("a", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct::new(String::from("initial a value"))
         );
         assert_eq!(
-            db.get("b", OperationTarget::Main).unwrap().unwrap(),
-            "initial b value".as_bytes()
+            db.get::<SampleDbStruct>("b", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct::new(String::from("initial b value"))
         );
         assert_eq!(
-            db.get("c", OperationTarget::Main).unwrap().unwrap(),
-            "initial c value".as_bytes()
+            db.get::<SampleDbStruct>("c", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct::new(String::from("initial c value"))
         );
-        hm2.insert("a", "changed a value".as_bytes());
+        hm2.insert("a", SampleDbStruct::new(String::from("changed a value")));
         db.set_batch(hm2, OperationTarget::Main);
         assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap().unwrap(),
-            "changed a value".as_bytes()
+            db.get::<SampleDbStruct>("a", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct::new(String::from("changed a value"))
         );
     }
 
     #[test]
     fn get_non_existent_value() {
         let (db, _td) = create_db();
-        assert_eq!(db.get("key", OperationTarget::Main).unwrap(), None);
+        assert_eq!(
+            db.get::<SampleDbStruct>("key", OperationTarget::Main)
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
     fn test_revert_n_commits() {
         let (db, _td) = create_db();
-        db.set("a", b"initial a value", OperationTarget::Main);
-        db.set("b", b"initial b value", OperationTarget::Main);
-        db.set("b", b"changed b value", OperationTarget::Main);
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("initial a value")),
+            OperationTarget::Main,
+        );
+        db.set(
+            "b",
+            SampleDbStruct::new(String::from("initial b value")),
+            OperationTarget::Main,
+        );
+        db.set(
+            "b",
+            SampleDbStruct::new(String::from("changed b value")),
+            OperationTarget::Main,
+        );
         assert_eq!(
-            db.get("b", OperationTarget::Main).unwrap().unwrap(),
-            b"changed b value"
+            db.get::<SampleDbStruct>("b", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("changed b value")
+            }
         );
         db.revert_n_commits(1).unwrap();
         assert_eq!(
-            db.get("b", OperationTarget::Main).unwrap().unwrap(),
-            b"initial b value"
+            db.get::<SampleDbStruct>("b", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("initial b value")
+            }
         );
     }
 
     #[test]
     fn test_revert_to_commit() {
         let (db, td) = create_db();
-        db.set("a", b"initial a value", OperationTarget::Main);
-        db.set("a", b"change #1", OperationTarget::Main);
-        db.set("a", b"change #2", OperationTarget::Main);
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("initial a value")),
+            OperationTarget::Main,
+        );
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("change #1")),
+            OperationTarget::Main,
+        );
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("change #2")),
+            OperationTarget::Main,
+        );
         assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap().unwrap(),
-            b"change #2"
+            db.get::<SampleDbStruct>("a", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("change #2")
+            }
         );
         let repo = Repository::open(td.path()).unwrap();
         let reference = repo
@@ -487,8 +584,12 @@ mod tests {
         let first_commit = head_commit.parent(0).unwrap().parent(0).unwrap().clone();
         db.revert_to_commit(first_commit.id()).unwrap();
         assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap().unwrap(),
-            b"initial a value"
+            db.get::<SampleDbStruct>("a", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("initial a value")
+            }
         );
     }
 
@@ -539,13 +640,22 @@ mod tests {
             None,
         );
         assert_eq!(db.replicas.len(), 1);
-        let result = db.set("a", b"a value", OperationTarget::Main);
+        let result = db.set(
+            "a",
+            SampleDbStruct::new(String::from("a value")),
+            OperationTarget::Main,
+        );
         for (_, value) in result {
             value.await.unwrap().unwrap();
         }
         assert_eq!(
-            db_backup.get("a", OperationTarget::Main).unwrap().unwrap(),
-            b"a value"
+            db_backup
+                .get::<SampleDbStruct>("a", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("a value")
+            }
         );
     }
 
@@ -559,7 +669,11 @@ mod tests {
             None,
         );
         assert_eq!(db.replicas.len(), 1);
-        let result = db.set("a", b"a value", OperationTarget::Main);
+        let result = db.set(
+            "a",
+            SampleDbStruct::new(String::from("a value")),
+            OperationTarget::Main,
+        );
         for (_, value) in result {
             assert!(value.await.unwrap().is_err());
         }
@@ -568,90 +682,170 @@ mod tests {
     #[test]
     fn test_simple_transaction() {
         let (db, _td) = create_db();
-        db.set("a", b"a val", OperationTarget::Main);
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("a val")),
+            OperationTarget::Main,
+        );
         let t = db.new_transaction(None).unwrap();
-        db.set("b", b"b val", OperationTarget::Transaction(&t));
-        assert_eq!(db.get("b", OperationTarget::Main).unwrap(), None);
+        db.set(
+            "b",
+            SampleDbStruct::new(String::from("b val")),
+            OperationTarget::Transaction(&t),
+        );
         assert_eq!(
-            db.get("b", OperationTarget::Transaction(&t))
+            db.get::<SampleDbStruct>("b", OperationTarget::Main)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.get::<SampleDbStruct>("b", OperationTarget::Transaction(&t))
                 .unwrap()
                 .unwrap(),
-            b"b val"
+            SampleDbStruct {
+                str_val: String::from("b val")
+            }
         );
         db.apply_transaction(&t, crate::ConflictResolution::Overwrite)
             .unwrap();
         assert_eq!(
-            db.get("b", OperationTarget::Main).unwrap().unwrap(),
-            b"b val"
+            db.get::<SampleDbStruct>("b", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("b val")
+            }
         );
     }
 
     #[test]
     fn test_transaction_overwrite() {
         let (db, _td) = create_db();
-        db.set("a", b"INIT\nline2", OperationTarget::Main);
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("INIT\nline2")),
+            OperationTarget::Main,
+        );
         let t = db.new_transaction(None).unwrap();
-        db.set("a", b"TRAN\nline2", OperationTarget::Transaction(&t));
-        db.set("a", b"MAIN\nline2", OperationTarget::Main);
-        assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap().unwrap(),
-            b"MAIN\nline2"
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("TRAN\nline2")),
+            OperationTarget::Transaction(&t),
+        );
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("MAIN\nline2")),
+            OperationTarget::Main,
         );
         assert_eq!(
-            db.get("a", OperationTarget::Transaction(&t))
+            db.get::<SampleDbStruct>("a", OperationTarget::Main)
                 .unwrap()
                 .unwrap(),
-            b"TRAN\nline2"
+            SampleDbStruct {
+                str_val: String::from("MAIN\nline2")
+            }
+        );
+        assert_eq!(
+            db.get::<SampleDbStruct>("a", OperationTarget::Transaction(&t))
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("TRAN\nline2")
+            }
         );
         db.apply_transaction(&t, crate::ConflictResolution::Overwrite)
             .unwrap();
         assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap().unwrap(),
-            b"TRAN\nline2"
+            db.get::<SampleDbStruct>("a", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("TRAN\nline2")
+            }
         );
     }
 
     #[test]
     fn test_transaction_discard() {
         let (db, _td) = create_db();
-        db.set("a", b"INIT\nline2", OperationTarget::Main);
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("INIT\nline2")),
+            OperationTarget::Main,
+        );
         let t = db.new_transaction(None).unwrap();
-        db.set("a", b"TRAN\nline2", OperationTarget::Transaction(&t));
-        db.set("a", b"MAIN\nline2", OperationTarget::Main);
-        assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap().unwrap(),
-            b"MAIN\nline2"
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("TRAN\nline2")),
+            OperationTarget::Transaction(&t),
+        );
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("MAIN\nline2")),
+            OperationTarget::Main,
         );
         assert_eq!(
-            db.get("a", OperationTarget::Transaction(&t))
+            db.get::<SampleDbStruct>("a", OperationTarget::Main)
                 .unwrap()
                 .unwrap(),
-            b"TRAN\nline2"
+            SampleDbStruct {
+                str_val: String::from("MAIN\nline2")
+            }
+        );
+        assert_eq!(
+            db.get::<SampleDbStruct>("a", OperationTarget::Transaction(&t))
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("TRAN\nline2")
+            }
         );
         db.apply_transaction(&t, crate::ConflictResolution::DiscardChanges)
             .unwrap();
         assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap().unwrap(),
-            b"MAIN\nline2"
+            db.get::<SampleDbStruct>("a", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("MAIN\nline2")
+            }
         );
     }
 
     #[test]
     fn test_transaction_abort() {
         let (db, _td) = create_db();
-        db.set("a", b"INIT\nline2", OperationTarget::Main);
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("INIT\nline2")),
+            OperationTarget::Main,
+        );
         let t = db.new_transaction(None).unwrap();
-        db.set("a", b"TRAN\nline2", OperationTarget::Transaction(&t));
-        db.set("a", b"MAIN\nline2", OperationTarget::Main);
-        assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap().unwrap(),
-            b"MAIN\nline2"
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("TRAN\nline2")),
+            OperationTarget::Transaction(&t),
+        );
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("MAIN\nline2")),
+            OperationTarget::Main,
         );
         assert_eq!(
-            db.get("a", OperationTarget::Transaction(&t))
+            db.get::<SampleDbStruct>("a", OperationTarget::Main)
                 .unwrap()
                 .unwrap(),
-            b"TRAN\nline2"
+            SampleDbStruct {
+                str_val: String::from("MAIN\nline2")
+            }
+        );
+        assert_eq!(
+            db.get::<SampleDbStruct>("a", OperationTarget::Transaction(&t))
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("TRAN\nline2")
+            }
         );
         assert_eq!(
             db.apply_transaction(&t, crate::ConflictResolution::Abort)
@@ -659,8 +853,12 @@ mod tests {
             error::TransactionError::Aborted
         );
         assert_eq!(
-            db.get("a", OperationTarget::Main).unwrap().unwrap(),
-            b"MAIN\nline2"
+            db.get::<SampleDbStruct>("a", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("MAIN\nline2")
+            }
         );
     }
 }
