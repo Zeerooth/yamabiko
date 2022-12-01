@@ -16,6 +16,7 @@ use serde::Serialize;
 use tokio::runtime::{Handle, Runtime};
 
 pub mod error;
+pub mod index;
 pub mod replica;
 pub mod serialization;
 
@@ -149,8 +150,16 @@ impl<'c> Collection<'c> {
         {
             let mut root_tree = commit.tree().unwrap();
             for (key, value) in items {
+                let mut hm = HashMap::new();
+                for index in self.list_indexes() {
+                    hm.insert(index.name().to_string(), None);
+                }
                 let blob = repo
-                    .blob(self.data_format.serialize(value).as_bytes())
+                    .blob(
+                        self.data_format
+                            .serialize_with_indexes(value, hm)
+                            .as_bytes(),
+                    )
                     .unwrap();
                 let hash = blake3::hash(key.as_ref().as_bytes());
                 let trees =
@@ -285,6 +294,35 @@ impl<'c> Collection<'c> {
             .delete()
             .unwrap();
         Ok(())
+    }
+
+    pub fn add_index(&self, field: &str) {
+        let repo = self.repository.lock();
+        let index_tree = Self::get_index_root(&repo);
+        // TODO
+    }
+
+    fn list_indexes(&self) -> Vec<index::Index> {
+        let repo = self.repository.lock();
+        let index_tree = Self::get_index_root(&repo);
+        let mut indexes = Vec::new();
+        for index in index_tree.iter() {
+            indexes.push(index::Index::new(
+                index.name().unwrap(),
+                index::IndexType::Single,
+            ))
+        }
+        indexes
+    }
+
+    fn get_index_root<'a>(repo: &'a MutexGuard<Repository>) -> Tree<'a> {
+        let current_commit = Collection::current_commit(&repo, "main").unwrap();
+        let index_entry = current_commit
+            .tree()
+            .unwrap()
+            .get_path(Path::new(".index"))
+            .unwrap();
+        repo.find_tree(index_entry.id()).unwrap()
     }
 
     fn replicate(&self) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>> {
