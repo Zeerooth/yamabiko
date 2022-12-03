@@ -5,7 +5,7 @@ use std::{collections::HashMap, path::Path};
 use blake3;
 use git2::build::CheckoutBuilder;
 use git2::{
-    BranchType, Commit, ErrorCode, FileFavor, MergeOptions, Oid, PushOptions, RebaseOptions,
+    BranchType, Commit, ErrorCode, FileFavor, Index, MergeOptions, Oid, PushOptions, RebaseOptions,
     Repository, Signature, Time, Tree, TreeBuilder,
 };
 use parking_lot::{Mutex, MutexGuard};
@@ -167,7 +167,7 @@ impl<'c> Collection<'c> {
                         .unwrap();
                 root_tree = repo.find_tree(trees).unwrap();
             }
-            let signature = self.signature();
+            let signature = Self::signature();
             let new_commit = repo
                 .commit_create_buffer(&signature, &signature, "update db", &root_tree, &[&commit])
                 .unwrap();
@@ -274,7 +274,7 @@ impl<'c> Collection<'c> {
                 };
                 break;
             }
-            match rebase.commit(None, &self.signature(), None) {
+            match rebase.commit(None, &Self::signature(), None) {
                 Ok(com) => current_commit = Some(com),
                 Err(err) => match err.code() {
                     ErrorCode::Applied => {}
@@ -296,10 +296,57 @@ impl<'c> Collection<'c> {
         Ok(())
     }
 
-    pub fn add_index(&self, field: &str) {
+    pub fn add_index(
+        &self,
+        field: &str,
+        kind: index::IndexType,
+        target: OperationTarget,
+    ) -> (
+        index::Index,
+        HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>>,
+    ) {
         let repo = self.repository.lock();
         let index_tree = Self::get_index_root(&repo);
-        // TODO
+        let index_name = format!("{}#{}", &field, kind);
+        let existing_index = index_tree.get_name(&index_name);
+        let index_obj = index::Index::from_name(&index_name).unwrap();
+        if let None = existing_index {
+            let branch = match target {
+                OperationTarget::Main => "main",
+                OperationTarget::Transaction(t) => t,
+            };
+            let commit = Collection::current_commit(&repo, branch).unwrap();
+            {
+                let mut root_tree = commit.tree().unwrap();
+                let mut tb = repo.treebuilder(Some(&index_tree)).unwrap();
+                let mut index =
+                    Index::open(Path::new(&repo.path().join(".index").join(&index_name)).into())
+                        .unwrap();
+                index.write();
+                let blob = repo.blob_path(index.path().unwrap()).unwrap();
+                tb.insert(&index_name, blob, 0o100644);
+                // root_tree = repo.find_tree(trees).unwrap();
+                let signature = Self::signature();
+                let new_commit = repo
+                    .commit_create_buffer(
+                        &signature,
+                        &signature,
+                        "update db",
+                        &root_tree,
+                        &[&commit],
+                    )
+                    .unwrap();
+                let commit_obj = repo
+                    .commit_signed(str::from_utf8(&new_commit).unwrap(), "", None)
+                    .unwrap();
+                let mut branch_ref = repo.find_branch(branch, BranchType::Local).unwrap();
+                branch_ref
+                    .get_mut()
+                    .set_target(commit_obj, "update db")
+                    .unwrap();
+            }
+        }
+        (index_obj, self.replicate())
     }
 
     fn list_indexes(&self) -> Vec<index::Index> {
@@ -450,7 +497,7 @@ impl<'c> Collection<'c> {
         }
     }
 
-    fn signature(&self) -> Signature {
+    fn signature<'a>() -> Signature<'a> {
         let current_time = &Time::new(chrono::Utc::now().timestamp(), 0);
         Signature::new("yamabiko", "yamabiko", current_time).unwrap()
     }
