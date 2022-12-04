@@ -31,7 +31,7 @@ impl DataFormat {
             Self::Json => {
                 let v: serde_json::Value = serde_json::to_value(&data).unwrap();
                 DataFormat::extract_indexes_json(&v, &mut indexes);
-                serde_json::from_value(v).unwrap()
+                serde_json::to_string(&v).unwrap()
             }
             #[cfg(feature = "yaml")]
             Self::Yaml => serde_yaml::to_string(&data).unwrap(),

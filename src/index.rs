@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum IndexType {
     Single,
 }
@@ -26,6 +26,7 @@ impl Display for IndexType {
     }
 }
 
+#[derive(Debug, PartialEq)]
 pub struct Index {
     name: String,
     kind: IndexType,
@@ -40,7 +41,7 @@ impl Index {
     }
 
     pub fn from_name(name: &str) -> Result<Self, ()> {
-        let token_list = name.rsplit_once("#");
+        let token_list = name.rsplit_once(".").unwrap().0.rsplit_once("#");
         if let Some(tokens) = token_list {
             return Ok(Self::new(tokens.0, IndexType::from_name(tokens.1)?));
         }

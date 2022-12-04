@@ -141,6 +141,7 @@ impl<'c> Collection<'c> {
         I: IntoIterator<Item = (T, S)>,
         T: AsRef<str>,
     {
+        let indexes = self.list_indexes();
         let repo = self.repository.lock();
         let branch = match target {
             OperationTarget::Main => "main",
@@ -151,7 +152,7 @@ impl<'c> Collection<'c> {
             let mut root_tree = commit.tree().unwrap();
             for (key, value) in items {
                 let mut hm = HashMap::new();
-                for index in self.list_indexes() {
+                for index in indexes.iter() {
                     hm.insert(index.name().to_string(), None);
                 }
                 let blob = repo
@@ -307,7 +308,7 @@ impl<'c> Collection<'c> {
     ) {
         let repo = self.repository.lock();
         let index_tree = Self::get_index_root(&repo);
-        let index_name = format!("{}#{}", &field, kind);
+        let index_name = format!("{}#{}.index", &field, kind);
         let existing_index = index_tree.get_name(&index_name);
         let index_obj = index::Index::from_name(&index_name).unwrap();
         if let None = existing_index {
@@ -317,21 +318,20 @@ impl<'c> Collection<'c> {
             };
             let commit = Collection::current_commit(&repo, branch).unwrap();
             {
-                let mut root_tree = commit.tree().unwrap();
                 let mut tb = repo.treebuilder(Some(&index_tree)).unwrap();
                 let mut index =
-                    Index::open(Path::new(&repo.path().join(".index").join(&index_name)).into())
-                        .unwrap();
-                index.write();
+                    Index::open(Path::new(&repo.path().join(&index_name)).into()).unwrap();
+                index.write_tree_to(&repo).unwrap();
                 let blob = repo.blob_path(index.path().unwrap()).unwrap();
-                tb.insert(&index_name, blob, 0o100644);
-                // root_tree = repo.find_tree(trees).unwrap();
+                tb.insert(&index_name, blob, 0o100644).unwrap();
+                let new_root = tb.write().unwrap();
+                let root_tree = repo.find_tree(new_root).unwrap();
                 let signature = Self::signature();
                 let new_commit = repo
                     .commit_create_buffer(
                         &signature,
                         &signature,
-                        "update db",
+                        format!("add index: {}", index_name).as_str(),
                         &root_tree,
                         &[&commit],
                     )
@@ -342,7 +342,7 @@ impl<'c> Collection<'c> {
                 let mut branch_ref = repo.find_branch(branch, BranchType::Local).unwrap();
                 branch_ref
                     .get_mut()
-                    .set_target(commit_obj, "update db")
+                    .set_target(commit_obj, format!("add index: {}", index_name).as_str())
                     .unwrap();
             }
         }
@@ -362,14 +362,27 @@ impl<'c> Collection<'c> {
         indexes
     }
 
-    fn get_index_root<'a>(repo: &'a MutexGuard<Repository>) -> Tree<'a> {
+    pub fn get_index_root<'a>(repo: &'a MutexGuard<Repository>) -> Tree<'a> {
         let current_commit = Collection::current_commit(&repo, "main").unwrap();
-        let index_entry = current_commit
+        current_commit
             .tree()
             .unwrap()
             .get_path(Path::new(".index"))
-            .unwrap();
-        repo.find_tree(index_entry.id()).unwrap()
+            .map(|x| repo.find_tree(x.id()).unwrap())
+            .unwrap_or_else(|_| {
+                let mut tb_root = repo
+                    .treebuilder(Some(&current_commit.tree().unwrap()))
+                    .unwrap();
+                tb_root
+                    .insert(
+                        ".index",
+                        repo.treebuilder(None).unwrap().write().unwrap(),
+                        0o040000,
+                    )
+                    .unwrap();
+                let tree = tb_root.write().unwrap();
+                repo.find_tree(tree).unwrap()
+            })
     }
 
     fn replicate(&self) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>> {
@@ -511,7 +524,12 @@ mod tests {
 
     use git2::{BranchType, Repository};
 
-    use crate::{error, replica::ReplicationMethod, OperationTarget};
+    use crate::{
+        error,
+        index::{Index, IndexType},
+        replica::ReplicationMethod,
+        OperationTarget,
+    };
 
     use super::test::*;
 
@@ -585,10 +603,12 @@ mod tests {
                 .unwrap(),
             SampleDbStruct::new(String::from("changed a value"))
         );
+        println!("{:?}", _td);
+        std::mem::forget(_td);
     }
 
     #[test]
-    fn get_non_existent_value() {
+    fn test_get_non_existent_value() {
         let (db, _td) = create_db();
         assert_eq!(
             db.get::<SampleDbStruct>("key", OperationTarget::Main)
@@ -945,5 +965,15 @@ mod tests {
                 str_val: String::from("MAIN\nline2")
             }
         );
+    }
+
+    #[test]
+    fn test_adding_index() {
+        println!("test");
+        let (db, _td) = create_db();
+        db.add_index("test_field", IndexType::Single, OperationTarget::Main);
+        let index_list = db.list_indexes();
+        assert_eq!(index_list.len(), 1);
+        assert_eq!(index_list[0], Index::new("test_field", IndexType::Single));
     }
 }
