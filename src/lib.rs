@@ -1,18 +1,16 @@
-use std::str;
-use std::sync::Arc;
-use std::{collections::HashMap, path::Path};
-
-use blake3;
 use git2::build::CheckoutBuilder;
 use git2::{
-    BranchType, Commit, ErrorCode, FileFavor, Index, MergeOptions, Oid, PushOptions, RebaseOptions,
-    Repository, Signature, Time, Tree, TreeBuilder,
+    BranchType, Commit, ErrorCode, FileFavor, Index, MergeOptions, ObjectType, Oid, PushOptions,
+    RebaseOptions, Repository, Signature, Time, Tree, TreeBuilder,
 };
 use parking_lot::{Mutex, MutexGuard};
 use rand::distributions::Alphanumeric;
 use rand::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::str;
+use std::sync::Arc;
+use std::{collections::HashMap, path::Path};
 use tokio::runtime::{Handle, Runtime};
 
 pub mod error;
@@ -151,22 +149,27 @@ impl<'c> Collection<'c> {
         {
             let mut root_tree = commit.tree().unwrap();
             for (key, value) in items {
-                let mut hm = HashMap::new();
+                let mut index_values = HashMap::new();
                 for index in indexes.iter() {
-                    hm.insert(index.indeld.to_string(), None);
+                    index_values.insert(index, None);
                 }
                 let blob = repo
                     .blob(
                         self.data_format
-                            .serialize_with_indexes(value, hm)
+                            .serialize_with_indexes(value, &mut index_values)
                             .as_bytes(),
                     )
                     .unwrap();
-                let hash = blake3::hash(key.as_ref().as_bytes());
+                let hash = Oid::hash_object(ObjectType::Blob, key.as_ref().as_bytes()).unwrap();
                 let trees =
                     Collection::make_tree(&repo, hash.as_bytes(), &root_tree, key.as_ref(), blob)
                         .unwrap();
                 root_tree = repo.find_tree(trees).unwrap();
+                for (index, value) in index_values {
+                    if let Some(val) = value {
+                        index.create_entry(&repo, hash, &val);
+                    }
+                }
             }
             let signature = Self::signature();
             let new_commit = repo
@@ -400,9 +403,9 @@ impl<'c> Collection<'c> {
         let mut trees: Vec<TreeBuilder> = vec![repo.treebuilder(Some(root_tree))?];
         for part in 0..2 {
             let parent_tree = trees.pop().unwrap();
-            let octal_part = oid[part];
+            let hex_part = oid[part];
             let mut tree_builder = parent_tree
-                .get(format!("{octal_part:o}"))
+                .get(format!("{hex_part:x}"))
                 .unwrap()
                 .map(|x| repo.treebuilder(Some(&x.to_object(&repo).unwrap().into_tree().unwrap())))
                 .unwrap_or_else(|| repo.treebuilder(None))?;
@@ -418,8 +421,8 @@ impl<'c> Collection<'c> {
             if let Some(mut parent_tree) = trees.pop() {
                 let tree_id = self_tree.write()?;
                 index -= 1;
-                let octal_part = oid[index];
-                parent_tree.insert(format!("{octal_part:o}"), tree_id, 0o040000)?;
+                let hex_part = oid[index];
+                parent_tree.insert(format!("{hex_part:x}"), tree_id, 0o040000)?;
                 trees.push(parent_tree);
             } else {
                 return Ok(self_tree.write()?);
@@ -469,12 +472,12 @@ impl<'c> Collection<'c> {
     }
 
     fn construct_path_to_key(key: &str) -> String {
-        let hash = blake3::hash(key.as_bytes());
+        let hash = Oid::hash_object(ObjectType::Blob, key.as_bytes()).unwrap();
         let hash_bytes = hash.as_bytes();
         let mut path = String::new();
         for x in 0..2 {
             let val = &hash_bytes[x];
-            path.push_str(format!("{val:o}").as_ref());
+            path.push_str(format!("{val:x}").as_ref());
             path.push('/');
         }
         path.push_str(key);
@@ -949,6 +952,7 @@ mod tests {
     #[test]
     fn test_adding_index() {
         let (db, _td) = create_db();
+        db.add_index("str_val", IndexType::Single, OperationTarget::Main);
         db.add_index("str_val", IndexType::Single, OperationTarget::Main);
         db.set(
             "a",

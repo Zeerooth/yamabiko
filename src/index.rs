@@ -1,6 +1,9 @@
-use std::fmt::Display;
+use std::{fmt::Display, path::Path};
 
-#[derive(PartialEq, Debug)]
+use git2::{Index as GitIndex, IndexEntry, IndexTime, Oid, Repository};
+use parking_lot::MutexGuard;
+
+#[derive(PartialEq, Eq, Hash, Debug)]
 pub enum IndexType {
     Single,
 }
@@ -26,7 +29,7 @@ impl Display for IndexType {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Index {
     name: String,
     indexed_field: String,
@@ -56,5 +59,30 @@ impl Index {
 
     pub fn indexed_field(&self) -> &str {
         self.indexed_field.as_str()
+    }
+
+    pub fn create_entry<'a>(&self, repo: &'a MutexGuard<Repository>, oid: Oid, value: &str) {
+        let entry = IndexEntry {
+            ctime: IndexTime::new(0, 0),
+            mtime: IndexTime::new(0, 0),
+            dev: 0,
+            ino: 0,
+            mode: 0o100644,
+            uid: 0,
+            gid: 0,
+            file_size: 0,
+            id: oid,
+            flags: 0,
+            flags_extended: 0,
+            path: value.as_bytes().to_vec(),
+        };
+        let mut git_index = GitIndex::open(
+            Path::new(repo.path())
+                .join(".index")
+                .join(self.name())
+                .as_path(),
+        )
+        .unwrap();
+        git_index.add(&entry).unwrap();
     }
 }

@@ -10,10 +10,10 @@ pub enum DataFormat {
 impl DataFormat {
     pub fn extract_indexes_json(
         data: &serde_json::Value,
-        indexes: &mut HashMap<String, Option<String>>,
+        indexes: &mut HashMap<&crate::index::Index, Option<String>>,
     ) {
         for (k, v) in indexes.iter_mut() {
-            if let Some(index_value) = data.get(k) {
+            if let Some(index_value) = data.get(k.indexed_field()) {
                 *v = Some(index_value.to_string())
             }
         }
@@ -22,7 +22,7 @@ impl DataFormat {
     pub fn serialize_with_indexes<T>(
         &self,
         data: T,
-        mut indexes: HashMap<String, Option<String>>,
+        indexes: &mut HashMap<&crate::index::Index, Option<String>>,
     ) -> String
     where
         T: Serialize,
@@ -30,7 +30,7 @@ impl DataFormat {
         match self {
             Self::Json => {
                 let v: serde_json::Value = serde_json::to_value(&data).unwrap();
-                DataFormat::extract_indexes_json(&v, &mut indexes);
+                DataFormat::extract_indexes_json(&v, indexes);
                 serde_json::to_string(&v).unwrap()
             }
             #[cfg(feature = "yaml")]
