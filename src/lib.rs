@@ -966,4 +966,34 @@ mod tests {
             Index::new("str_val#single.index", "str_val", IndexType::Single)
         );
     }
+
+    #[test]
+    fn test_index_content() {
+        let (db, _td) = create_db();
+        db.add_index("str_val", IndexType::Single, OperationTarget::Main);
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("1val")),
+            OperationTarget::Main,
+        );
+        db.set(
+            "b",
+            SampleDbStruct::new(String::from("1val")),
+            OperationTarget::Main,
+        );
+        db.set(
+            "c",
+            SampleDbStruct::new(String::from("2val")),
+            OperationTarget::Main,
+        );
+
+        let index_values: Vec<git2::IndexEntry> = db.list_indexes()[0]
+            .git_index(&db.repository.lock())
+            .iter()
+            .collect();
+        assert_eq!(index_values.len(), 3);
+        assert_eq!(index_values[0].path, "1val/fffffffffffffffe".as_bytes());
+        assert_eq!(index_values[1].path, "1val/ffffffffffffffff".as_bytes());
+        assert_eq!(index_values[2].path, "2val/ffffffffffffffff".as_bytes());
+    }
 }

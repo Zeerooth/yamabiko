@@ -1,6 +1,6 @@
 use std::{fmt::Display, path::Path};
 
-use git2::{Index as GitIndex, IndexEntry, IndexTime, Oid, Repository};
+use git2::{Index as GitIndex, IndexEntries, IndexEntry, IndexTime, Oid, Repository};
 use parking_lot::MutexGuard;
 
 #[derive(PartialEq, Eq, Hash, Debug)]
@@ -62,6 +62,20 @@ impl Index {
     }
 
     pub fn create_entry<'a>(&self, repo: &'a MutexGuard<Repository>, oid: Oid, value: &str) {
+        let mut git_index = self.git_index(repo);
+        let last_entry = git_index.find_prefix(&value).unwrap();
+        let next_value = match last_entry {
+            Some(v) => {
+                let path = git_index.get(v).unwrap().path;
+                let num = u64::from_str_radix(
+                    &String::from_utf8(path.split_at(path.len() - 16).1.to_vec()).unwrap(),
+                    16,
+                )
+                .unwrap();
+                num - 1
+            }
+            None => u64::MAX,
+        };
         let entry = IndexEntry {
             ctime: IndexTime::new(0, 0),
             mtime: IndexTime::new(0, 0),
@@ -74,15 +88,19 @@ impl Index {
             id: oid,
             flags: 0,
             flags_extended: 0,
-            path: value.as_bytes().to_vec(),
+            path: format!("{}/{:16x}", value, next_value).as_bytes().to_vec(),
         };
-        let mut git_index = GitIndex::open(
+        git_index.add(&entry).unwrap();
+        git_index.write().unwrap();
+    }
+
+    pub fn git_index<'a>(&self, repo: &'a MutexGuard<Repository>) -> GitIndex {
+        GitIndex::open(
             Path::new(repo.path())
                 .join(".index")
                 .join(self.name())
                 .as_path(),
         )
-        .unwrap();
-        git_index.add(&entry).unwrap();
+        .unwrap()
     }
 }
