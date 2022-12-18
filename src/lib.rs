@@ -350,7 +350,32 @@ impl<'c> Collection<'c> {
                     .unwrap();
             }
         }
+        self.populate_index(&repo, &index_obj);
         (index_obj, self.replicate())
+    }
+
+    fn populate_index<'a>(&self, repo: &'a MutexGuard<Repository>, index: &index::Index) {
+        let mut index_values: HashMap<&index::Index, Option<String>> = HashMap::new();
+        for obj in repo.index().unwrap().iter() {
+            index_values.insert(&index, None);
+            let path = &String::from_utf8(obj.path).unwrap();
+            let tree_path = Collection::current_commit(&repo, "main")
+                .map_err(|e| match e.code() {
+                    ErrorCode::NotFound => error::GetObjectError::InvalidOperationTarget,
+                    _ => e.into(),
+                })
+                .unwrap()
+                .tree()
+                .unwrap()
+                .get_path(&Path::new(path))
+                .ok();
+            let blob = tree_path.unwrap().to_object(&repo).unwrap();
+            let blob_content = blob.as_blob().unwrap().content();
+            let index_val = self
+                .data_format
+                .serialize_with_indexes(blob_content, &mut index_values);
+            index.create_entry(&repo, Self::construct_oid_from_path(path), &index_val);
+        }
     }
 
     fn list_indexes(&self) -> Vec<index::Index> {
@@ -482,6 +507,10 @@ impl<'c> Collection<'c> {
         }
         path.push_str(key);
         path
+    }
+
+    fn construct_oid_from_path(path: &str) -> Oid {
+        Oid::from_str(&path[path.len() - 22..].replace("/", "")).unwrap()
     }
 
     fn get_runtime_handle() -> (Handle, Option<Runtime>) {

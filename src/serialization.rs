@@ -14,7 +14,7 @@ impl DataFormat {
     ) {
         for (k, v) in indexes.iter_mut() {
             if let Some(index_value) = data.get(k.indexed_field()) {
-                *v = Some(index_value.to_string())
+                *v = Some(index_value.as_str().unwrap().to_string())
             }
         }
     }

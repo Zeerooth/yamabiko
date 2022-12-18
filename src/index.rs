@@ -1,6 +1,6 @@
 use std::{fmt::Display, path::Path};
 
-use git2::{Index as GitIndex, IndexEntries, IndexEntry, IndexTime, Oid, Repository};
+use git2::{Index as GitIndex, IndexEntry, IndexTime, Oid, Repository};
 use parking_lot::MutexGuard;
 
 #[derive(PartialEq, Eq, Hash, Debug)]
@@ -76,6 +76,7 @@ impl Index {
             }
             None => u64::MAX,
         };
+        let path = format!("{}/{:16x}", value, next_value);
         let entry = IndexEntry {
             ctime: IndexTime::new(0, 0),
             mtime: IndexTime::new(0, 0),
@@ -88,7 +89,7 @@ impl Index {
             id: oid,
             flags: 0,
             flags_extended: 0,
-            path: format!("{}/{:16x}", value, next_value).as_bytes().to_vec(),
+            path: path.as_bytes().to_vec(),
         };
         git_index.add(&entry).unwrap();
         git_index.write().unwrap();
