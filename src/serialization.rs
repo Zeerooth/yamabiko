@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Clone, Copy)]
 pub enum DataFormat {
     Json,
     #[cfg(feature = "yaml")]
@@ -35,6 +36,29 @@ impl DataFormat {
             }
             #[cfg(feature = "yaml")]
             Self::Yaml => serde_yaml::to_string(&data).unwrap(),
+        }
+    }
+
+    pub fn match_field<T>(
+        &self,
+        data: T,
+        field: &str,
+        value: &str,
+        comparison: std::cmp::Ordering,
+    ) -> bool
+    where
+        T: Serialize,
+    {
+        match self {
+            Self::Json => {
+                let v: serde_json::Value = serde_json::to_value(&data).unwrap();
+                match v.get(field) {
+                    Some(res) => value.cmp(res.as_str().unwrap()) == comparison,
+                    None => false,
+                }
+            }
+            #[cfg(feature = "yaml")]
+            Self::Yaml => true,
         }
     }
 

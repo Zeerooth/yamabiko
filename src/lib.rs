@@ -15,6 +15,7 @@ use tokio::runtime::{Handle, Runtime};
 
 pub mod error;
 pub mod index;
+pub mod query;
 pub mod replica;
 pub mod serialization;
 
@@ -70,6 +71,10 @@ impl<'c> Collection<'c> {
             handle: Collection::get_runtime_handle().0,
             data_format,
         })
+    }
+
+    pub fn repository(&self) -> MutexGuard<Repository> {
+        self.repository.lock()
     }
 
     pub fn add_replica(
@@ -357,6 +362,9 @@ impl<'c> Collection<'c> {
     fn populate_index<'a>(&self, repo: &'a MutexGuard<Repository>, index: &index::Index) {
         let mut index_values: HashMap<&index::Index, Option<String>> = HashMap::new();
         for obj in repo.index().unwrap().iter() {
+            if obj.mode != 0o100644 {
+                continue;
+            }
             index_values.insert(&index, None);
             let path = &String::from_utf8(obj.path).unwrap();
             let tree_path = Collection::current_commit(&repo, "main")
