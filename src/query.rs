@@ -1,7 +1,6 @@
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::ops::{BitAnd, BitOr};
-use std::path::Path;
 
 use git2::{ObjectType, TreeWalkResult};
 

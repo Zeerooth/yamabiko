@@ -39,21 +39,24 @@ impl DataFormat {
         }
     }
 
-    pub fn match_field<T>(
+    pub fn match_field(
         &self,
-        data: T,
+        data: &[u8],
         field: &str,
         value: &str,
         comparison: std::cmp::Ordering,
-    ) -> bool
-    where
-        T: Serialize,
-    {
+    ) -> bool {
         match self {
             Self::Json => {
-                let v: serde_json::Value = serde_json::to_value(&data).unwrap();
+                let v: serde_json::Value = serde_json::from_slice(&data).unwrap();
                 match v.get(field) {
-                    Some(res) => value.cmp(res.as_str().unwrap()) == comparison,
+                    Some(res) => {
+                        let other = res
+                            .as_str()
+                            .map(|x| x.to_string())
+                            .unwrap_or_else(|| res.to_string());
+                        other.as_str().cmp(value) == comparison
+                    }
                     None => false,
                 }
             }
