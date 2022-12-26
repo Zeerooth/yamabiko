@@ -9,9 +9,21 @@ pub struct SampleDbStruct {
     pub str_val: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct ComplexDbStruct {
+    pub str_val: String,
+    pub usize_val: usize,
+}
+
 impl SampleDbStruct {
     pub fn new(str_val: String) -> Self {
         Self { str_val }
+    }
+}
+
+impl ComplexDbStruct {
+    pub fn new(str_val: String, usize_val: usize) -> Self {
+        Self { str_val, usize_val }
     }
 }
 
