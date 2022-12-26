@@ -2,11 +2,8 @@ use std::cmp::Ordering;
 use std::fmt::Display;
 use std::ops::{BitAnd, BitOr};
 use std::path::Path;
-use std::sync::Arc;
 
-use git2::Repository;
-use parking_lot::{Mutex, MutexGuard};
-use serde::Deserialize;
+use git2::{ObjectType, TreeWalkResult};
 
 use crate::serialization::DataFormat;
 use crate::Collection;
@@ -15,7 +12,7 @@ pub struct QueryBuilder {
     query: Option<QueryGroup>,
 }
 
-pub fn q<V: Display>(field: &str, value: V, comparator: Ordering) -> QueryGroup {
+pub fn q<V: Display>(field: &str, comparator: Ordering, value: V) -> QueryGroup {
     QueryGroup {
         next_group: Vec::new(),
         field_query: FieldQuery {
@@ -26,6 +23,7 @@ pub fn q<V: Display>(field: &str, value: V, comparator: Ordering) -> QueryGroup 
     }
 }
 
+#[derive(Debug)]
 pub struct QueryGroup {
     next_group: Vec<(QueryGroup, Chain)>,
     field_query: FieldQuery,
@@ -43,7 +41,7 @@ impl QueryGroup {
             result = match group.1 {
                 Chain::And => result && group.0.resolve(&data_format, &data),
                 Chain::Or => result || group.0.resolve(&data_format, &data),
-            }
+            };
         }
         result
     }
@@ -67,11 +65,13 @@ impl BitAnd for QueryGroup {
     }
 }
 
+#[derive(Debug)]
 enum Chain {
     And,
     Or,
 }
 
+#[derive(Debug)]
 struct FieldQuery {
     field: String,
     value: String,
@@ -79,8 +79,8 @@ struct FieldQuery {
 }
 
 pub struct QueryResult {
-    data: Vec<String>,
-    count: usize,
+    pub results: Vec<String>,
+    pub count: usize,
 }
 
 impl Iterator for QueryResult {
@@ -96,12 +96,12 @@ impl QueryBuilder {
         Self { query: None }
     }
 
-    fn query(mut self, query: QueryGroup) -> Self {
+    pub fn query(mut self, query: QueryGroup) -> Self {
         self.query = Some(query);
         self
     }
 
-    fn execute<'a>(&self, collection: &Collection) -> QueryResult {
+    pub fn execute<'a>(&self, collection: &Collection) -> QueryResult {
         // imply scanning
         let mut keys: Vec<String> = Vec::new();
         let repo = collection.repository();
@@ -109,14 +109,12 @@ impl QueryBuilder {
             .unwrap()
             .tree()
             .unwrap();
-        for obj in repo.index().unwrap().iter() {
-            if obj.mode != 0o100644 {
-                continue;
+        tree.walk(git2::TreeWalkMode::PostOrder, |_, entry| {
+            if entry.kind() != Some(ObjectType::Blob) {
+                return TreeWalkResult::Skip;
             }
-            let path = String::from_utf8(obj.path).unwrap();
-            let key = path.split_at(4).1.to_string();
-            let blob_path = tree.get_path(&Path::new(&path)).ok();
-            let blob = blob_path.unwrap().to_object(&repo).unwrap();
+            let key = entry.name().unwrap().to_string();
+            let blob = entry.to_object(&repo).unwrap();
             let blob_content = blob.as_blob().unwrap().content();
             if let Some(query) = &self.query {
                 if query.resolve(&collection.data_format, blob_content) {
@@ -125,10 +123,14 @@ impl QueryBuilder {
             } else {
                 keys.push(key)
             }
-        }
-
+            TreeWalkResult::Ok
+        })
+        .unwrap();
         let count = keys.len();
-        QueryResult { data: keys, count }
+        QueryResult {
+            results: keys,
+            count,
+        }
     }
 }
 
@@ -139,6 +141,7 @@ mod tests {
         test::*,
         OperationTarget,
     };
+    use std::cmp::Ordering::*;
 
     #[test]
     fn test_simple_query() {
@@ -158,10 +161,7 @@ mod tests {
             OperationTarget::Main,
         );
         let query_result = QueryBuilder::new()
-            .query(
-                q("str_val", "value", std::cmp::Ordering::Equal)
-                    | q("non_existing_val", "a", std::cmp::Ordering::Equal),
-            )
+            .query(q("str_val", Equal, "value") | q("non_existing_val", Equal, "a"))
             .execute(&db);
         assert_eq!(query_result.count, 1);
     }
@@ -187,9 +187,8 @@ mod tests {
 
         let query_result = QueryBuilder::new()
             .query(
-                q("str_val", "different", std::cmp::Ordering::Equal)
-                    | (q("usize_val", 10, std::cmp::Ordering::Less)
-                        & q("str_val", "value", std::cmp::Ordering::Equal)),
+                q("str_val", Equal, "different")
+                    | (q("usize_val", Less, 10) & q("str_val", Equal, "value")),
             )
             .execute(&db);
         assert_eq!(query_result.count, 1);

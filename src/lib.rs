@@ -1,7 +1,7 @@
 use git2::build::CheckoutBuilder;
 use git2::{
     BranchType, Commit, ErrorCode, FileFavor, Index, MergeOptions, ObjectType, Oid, PushOptions,
-    RebaseOptions, Repository, Signature, Time, Tree, TreeBuilder,
+    RebaseOptions, Repository, Signature, Time, Tree, TreeBuilder, TreeWalkResult,
 };
 use parking_lot::{Mutex, MutexGuard};
 use rand::distributions::Alphanumeric;
@@ -361,29 +361,34 @@ impl<'c> Collection<'c> {
 
     fn populate_index<'a>(&self, repo: &'a MutexGuard<Repository>, index: &index::Index) {
         let mut index_values: HashMap<&index::Index, Option<String>> = HashMap::new();
-        for obj in repo.index().unwrap().iter() {
-            if obj.mode != 0o100644 {
-                continue;
-            }
-            index_values.insert(&index, None);
-            let path = &String::from_utf8(obj.path).unwrap();
-            let tree_path = Collection::current_commit(&repo, "main")
-                .map_err(|e| match e.code() {
-                    ErrorCode::NotFound => error::GetObjectError::InvalidOperationTarget,
-                    _ => e.into(),
-                })
-                .unwrap()
-                .tree()
-                .unwrap()
-                .get_path(&Path::new(path))
-                .ok();
-            let blob = tree_path.unwrap().to_object(&repo).unwrap();
-            let blob_content = blob.as_blob().unwrap().content();
-            let index_val = self
-                .data_format
-                .serialize_with_indexes(blob_content, &mut index_values);
-            index.create_entry(&repo, Self::construct_oid_from_path(path), &index_val);
-        }
+        let current_commit = Collection::current_commit(repo, "main").unwrap();
+        current_commit
+            .tree()
+            .unwrap()
+            .walk(git2::TreeWalkMode::PreOrder, |_, entry| {
+                if entry.kind() != Some(ObjectType::Blob) {
+                    return TreeWalkResult::Skip;
+                }
+                index_values.insert(&index, None);
+                let oid = entry.id();
+                let tree_path = Collection::current_commit(&repo, "main")
+                    .map_err(|e| match e.code() {
+                        ErrorCode::NotFound => error::GetObjectError::InvalidOperationTarget,
+                        _ => e.into(),
+                    })
+                    .unwrap()
+                    .tree()
+                    .unwrap();
+                let obj = tree_path.get_id(oid).unwrap();
+                let blob = obj.to_object(&repo).unwrap();
+                let blob_content = blob.as_blob().unwrap().content();
+                let index_val = self
+                    .data_format
+                    .serialize_with_indexes(blob_content, &mut index_values);
+                index.create_entry(&repo, oid, &index_val);
+                TreeWalkResult::Ok
+            })
+            .unwrap();
     }
 
     fn list_indexes(&self) -> Vec<index::Index> {
