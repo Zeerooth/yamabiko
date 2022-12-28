@@ -170,17 +170,17 @@ mod tests {
         let (db, _td) = create_db();
         db.set(
             "a",
-            ComplexDbStruct::new(String::from("value"), 22),
+            ComplexDbStruct::new(String::from("value"), 22, 1.0),
             OperationTarget::Main,
         );
         db.set(
             "b",
-            ComplexDbStruct::new(String::from("value"), 4),
+            ComplexDbStruct::new(String::from("value"), 4, 1.0),
             OperationTarget::Main,
         );
         db.set(
             "c",
-            ComplexDbStruct::new(String::from("different"), 22),
+            ComplexDbStruct::new(String::from("different"), 22, 1.0),
             OperationTarget::Main,
         );
 
@@ -189,6 +189,20 @@ mod tests {
                 q("str_val", Equal, "different")
                     | (q("usize_val", Less, 10) & q("str_val", Equal, "value")),
             )
+            .execute(&db);
+        assert_eq!(query_result.count, 1);
+    }
+
+    #[test]
+    fn test_float_number_query() {
+        let (db, _td) = create_db();
+        db.set(
+            "a",
+            ComplexDbStruct::new(String::from("value"), 22, 3.14),
+            OperationTarget::Main,
+        );
+        let query_result = QueryBuilder::new()
+            .query(q("float_val", Less, 22.1))
             .execute(&db);
         assert_eq!(query_result.count, 1);
     }
