@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::fmt::Display;
 use std::ops::{BitAnd, BitOr};
 
 use git2::{ObjectType, TreeWalkResult};
@@ -7,16 +6,67 @@ use git2::{ObjectType, TreeWalkResult};
 use crate::serialization::DataFormat;
 use crate::Collection;
 
+#[derive(Debug)]
+pub enum FieldType {
+    Float(f64),
+    Int(i64),
+    String(String),
+}
+
+impl From<f64> for FieldType {
+    fn from(number: f64) -> Self {
+        Self::Float(number)
+    }
+}
+
+impl From<i64> for FieldType {
+    fn from(number: i64) -> Self {
+        Self::Int(number)
+    }
+}
+
+impl From<String> for FieldType {
+    fn from(text: String) -> Self {
+        Self::String(text)
+    }
+}
+
+impl From<&str> for FieldType {
+    fn from(text: &str) -> Self {
+        Self::String(text.to_owned())
+    }
+}
+
+impl PartialEq<serde_json::Value> for FieldType {
+    fn eq(&self, other: &serde_json::Value) -> bool {
+        match self {
+            FieldType::Float(f) => other.as_f64().map(|x| &x == f).unwrap_or(false),
+            FieldType::Int(i) => other.as_i64().map(|x| &x == i).unwrap_or(false),
+            FieldType::String(s) => other.as_str().map(|x| &x == s).unwrap_or(false),
+        }
+    }
+}
+
+impl PartialOrd<serde_json::Value> for FieldType {
+    fn partial_cmp(&self, other: &serde_json::Value) -> Option<Ordering> {
+        match self {
+            FieldType::Float(f) => other.as_f64().map(|x| x.partial_cmp(f)).unwrap_or(None),
+            FieldType::Int(i) => other.as_i64().map(|x| x.partial_cmp(i)).unwrap_or(None),
+            FieldType::String(s) => other.as_str().map(|x| x.partial_cmp(s)).unwrap_or(None),
+        }
+    }
+}
+
 pub struct QueryBuilder {
     query: Option<QueryGroup>,
 }
 
-pub fn q<V: Display>(field: &str, comparator: Ordering, value: V) -> QueryGroup {
+pub fn q<V: Into<FieldType>>(field: &str, comparator: Ordering, value: V) -> QueryGroup {
     QueryGroup {
         next_group: Vec::new(),
         field_query: FieldQuery {
             field: field.to_string(),
-            value: value.to_string(),
+            value: value.into(),
             comparator,
         },
     }
@@ -73,7 +123,7 @@ enum Chain {
 #[derive(Debug)]
 struct FieldQuery {
     field: String,
-    value: String,
+    value: FieldType,
     comparator: Ordering,
 }
 
@@ -190,7 +240,7 @@ mod tests {
                     | (q("usize_val", Less, 10) & q("str_val", Equal, "value")),
             )
             .execute(&db);
-        assert_eq!(query_result.count, 1);
+        assert_eq!(query_result.count, 2);
     }
 
     #[test]

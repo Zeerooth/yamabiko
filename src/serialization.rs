@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::query::FieldType;
+
 #[derive(Clone, Copy)]
 pub enum DataFormat {
     Json,
@@ -43,20 +45,14 @@ impl DataFormat {
         &self,
         data: &[u8],
         field: &str,
-        value: &str,
+        value: &FieldType,
         comparison: std::cmp::Ordering,
     ) -> bool {
         match self {
             Self::Json => {
                 let v: serde_json::Value = serde_json::from_slice(&data).unwrap();
                 match v.get(field) {
-                    Some(res) => {
-                        let other = res
-                            .as_str()
-                            .map(|x| x.to_string())
-                            .unwrap_or_else(|| res.to_string());
-                        other.as_str().cmp(value) == comparison
-                    }
+                    Some(res) => value.partial_cmp(res) == Some(comparison),
                     None => false,
                 }
             }
