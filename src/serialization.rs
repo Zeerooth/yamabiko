@@ -17,7 +17,24 @@ impl DataFormat {
     ) {
         for (k, v) in indexes.iter_mut() {
             if let Some(index_value) = data.get(k.indexed_field()) {
-                *v = Some(index_value.as_str().unwrap().to_string())
+                *v = match index_value {
+                    serde_json::Value::Null => todo!(),
+                    serde_json::Value::Bool(_) => todo!(),
+                    serde_json::Value::Number(_) => match index_value.as_f64() {
+                        Some(v) => Some(format!(
+                            "{}/{:16x}",
+                            match v.is_sign_positive() {
+                                true => "1",
+                                false => "0",
+                            },
+                            (v as f64).to_bits()
+                        )),
+                        None => None,
+                    },
+                    serde_json::Value::String(_) => Some(index_value.as_str().unwrap().to_string()),
+                    serde_json::Value::Array(_) => todo!(),
+                    serde_json::Value::Object(_) => todo!(),
+                }
             }
         }
     }

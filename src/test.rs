@@ -9,6 +9,16 @@ pub struct SampleDbStruct {
     pub str_val: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct InterigentDbStruct {
+    pub num_val: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct FloatyDbStruct {
+    pub num_val: f64,
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct ComplexDbStruct {
     pub str_val: String,

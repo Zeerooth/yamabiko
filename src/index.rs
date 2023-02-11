@@ -3,15 +3,17 @@ use std::{fmt::Display, path::Path};
 use git2::{Index as GitIndex, IndexEntry, IndexTime, Oid, Repository};
 use parking_lot::MutexGuard;
 
-#[derive(PartialEq, Eq, Hash, Debug)]
+#[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
 pub enum IndexType {
-    Single,
+    Numeric,
+    Sequential,
 }
 
 impl IndexType {
     pub fn from_name(name: &str) -> Result<Self, ()> {
         match name {
-            "single" => Ok(Self::Single),
+            "numeric" => Ok(Self::Numeric),
+            "sequential" => Ok(Self::Sequential),
             _ => Err(()),
         }
     }
@@ -23,13 +25,14 @@ impl Display for IndexType {
             f,
             "{}",
             match self {
-                IndexType::Single => "single",
+                IndexType::Numeric => "numeric",
+                IndexType::Sequential => "sequential",
             }
         )
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Index {
     name: String,
     indexed_field: String,
@@ -63,9 +66,9 @@ impl Index {
 
     pub fn create_entry<'a>(&self, repo: &'a MutexGuard<Repository>, oid: Oid, value: &str) {
         let mut git_index = self.git_index(repo);
-        let last_entry = git_index.find_prefix(&value).unwrap();
+        let last_entry = git_index.find_prefix(format!("{}", &value));
         let next_value = match last_entry {
-            Some(v) => {
+            Ok(v) => {
                 let path = git_index.get(v).unwrap().path;
                 let num = u64::from_str_radix(
                     &String::from_utf8(path.split_at(path.len() - 16).1.to_vec()).unwrap(),
@@ -74,7 +77,7 @@ impl Index {
                 .unwrap();
                 num - 1
             }
-            None => u64::MAX,
+            Err(_) => u64::MAX,
         };
         let path = format!("{}/{:16x}", value, next_value);
         let entry = IndexEntry {
@@ -103,5 +106,13 @@ impl Index {
                 .as_path(),
         )
         .unwrap()
+    }
+
+    pub fn extract_value(entry: &IndexEntry) -> &[u8] {
+        let n = match entry.ino {
+            1 => 2,
+            _ => 3,
+        };
+        entry.path.rsplitn(n, |b| *b == b'/').nth(1).unwrap()
     }
 }

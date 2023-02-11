@@ -134,6 +134,40 @@ impl<'c> Collection<'c> {
         Ok(None)
     }
 
+    pub fn get_by_oid<D>(
+        &self,
+        oid: Oid,
+        target: OperationTarget,
+    ) -> Result<Option<D>, error::GetObjectError>
+    where
+        D: DeserializeOwned,
+    {
+        let branch = match target {
+            OperationTarget::Main => "main",
+            OperationTarget::Transaction(t) => t,
+        };
+        let repo = self.repository.lock();
+        let tree = Collection::current_commit(&repo, branch)
+            .map_err(|e| match e.code() {
+                ErrorCode::NotFound => error::GetObjectError::InvalidOperationTarget,
+                _ => e.into(),
+            })?
+            .tree()?;
+        let tree_path = tree.get_id(oid);
+        if let Some(tree_entry) = tree_path {
+            let obj = tree_entry.to_object(&repo)?;
+            let blob = obj
+                .as_blob()
+                .ok_or_else(|| error::GetObjectError::CorruptedObject)?;
+            let blob_content = blob.content().to_owned();
+            return Ok(Some(
+                self.data_format
+                    .deserialize(str::from_utf8(&blob_content).unwrap()),
+            ));
+        };
+        Ok(None)
+    }
+
     pub fn set_batch<'a, S, I, T>(
         &self,
         items: I,
@@ -144,7 +178,7 @@ impl<'c> Collection<'c> {
         I: IntoIterator<Item = (T, S)>,
         T: AsRef<str>,
     {
-        let indexes = self.list_indexes();
+        let indexes = self.index_list();
         let repo = self.repository.lock();
         let branch = match target {
             OperationTarget::Main => "main",
@@ -391,13 +425,25 @@ impl<'c> Collection<'c> {
             .unwrap();
     }
 
-    fn list_indexes(&self) -> Vec<index::Index> {
+    fn index_list(&self) -> Vec<index::Index> {
         let repo = self.repository.lock();
         let index_tree = Self::current_commit(&repo, "main").unwrap().tree().unwrap();
         let mut indexes = Vec::new();
         for index in index_tree.iter() {
             if index.name().unwrap().ends_with(".index") {
                 indexes.push(index::Index::from_name(index.name().unwrap()).unwrap());
+            }
+        }
+        indexes
+    }
+
+    fn index_field_map<'a>(repo: &'a MutexGuard<Repository>) -> HashMap<String, index::Index> {
+        let index_tree = Self::current_commit(&repo, "main").unwrap().tree().unwrap();
+        let mut indexes = HashMap::new();
+        for index in index_tree.iter() {
+            if index.name().unwrap().ends_with(".index") {
+                let ind = index::Index::from_name(index.name().unwrap()).unwrap();
+                indexes.insert(ind.indexed_field().to_string(), ind);
             }
         }
         indexes
@@ -994,25 +1040,25 @@ mod tests {
     #[test]
     fn test_adding_index() {
         let (db, _td) = create_db();
-        db.add_index("str_val", IndexType::Single, OperationTarget::Main);
-        db.add_index("str_val", IndexType::Single, OperationTarget::Main);
+        db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
+        db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
         db.set(
             "a",
             SampleDbStruct::new(String::from("test value")),
             OperationTarget::Main,
         );
-        let index_list = db.list_indexes();
+        let index_list = db.index_list();
         assert_eq!(index_list.len(), 1);
         assert_eq!(
             index_list[0],
-            Index::new("str_val#single.index", "str_val", IndexType::Single)
+            Index::new("str_val#sequential.index", "str_val", IndexType::Sequential)
         );
     }
 
     #[test]
     fn test_index_content() {
         let (db, _td) = create_db();
-        db.add_index("str_val", IndexType::Single, OperationTarget::Main);
+        db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
         db.set(
             "a",
             SampleDbStruct::new(String::from("1val")),
@@ -1029,7 +1075,7 @@ mod tests {
             OperationTarget::Main,
         );
 
-        let index_values: Vec<git2::IndexEntry> = db.list_indexes()[0]
+        let index_values: Vec<git2::IndexEntry> = db.index_list()[0]
             .git_index(&db.repository.lock())
             .iter()
             .collect();
@@ -1037,5 +1083,57 @@ mod tests {
         assert_eq!(index_values[0].path, "1val/fffffffffffffffe".as_bytes());
         assert_eq!(index_values[1].path, "1val/ffffffffffffffff".as_bytes());
         assert_eq!(index_values[2].path, "2val/ffffffffffffffff".as_bytes());
+    }
+
+    #[test]
+    fn test_index_content_numeric() {
+        let (db, _td) = create_db();
+        db.add_index("num_val", IndexType::Numeric, OperationTarget::Main);
+        db.set(
+            "b",
+            InterigentDbStruct { num_val: 20 },
+            OperationTarget::Main,
+        );
+        db.set(
+            "c",
+            InterigentDbStruct { num_val: 2 },
+            OperationTarget::Main,
+        );
+        db.set(
+            "d",
+            InterigentDbStruct { num_val: 3 },
+            OperationTarget::Main,
+        );
+        db.set(
+            "e",
+            FloatyDbStruct { num_val: -11.0 },
+            OperationTarget::Main,
+        );
+        db.set("a", FloatyDbStruct { num_val: 2.11 }, OperationTarget::Main);
+        let index_values: Vec<git2::IndexEntry> = db.index_list()[0]
+            .git_index(&db.repository.lock())
+            .iter()
+            .collect();
+        assert_eq!(index_values.len(), 5);
+        assert_eq!(
+            String::from_utf8(index_values[0].path.clone()).unwrap(),
+            format!("0/{:16x}/ffffffffffffffff", (-11 as f64).to_bits())
+        );
+        assert_eq!(
+            String::from_utf8(index_values[1].path.clone()).unwrap(),
+            format!("1/{:16x}/ffffffffffffffff", 2.0_f64.to_bits())
+        );
+        assert_eq!(
+            String::from_utf8(index_values[2].path.clone()).unwrap(),
+            format!("1/{:16x}/ffffffffffffffff", 2.11_f64.to_bits())
+        );
+        assert_eq!(
+            String::from_utf8(index_values[3].path.clone()).unwrap(),
+            format!("1/{:16x}/ffffffffffffffff", 3.0_f64.to_bits())
+        );
+        assert_eq!(
+            String::from_utf8(index_values[4].path.clone()).unwrap(),
+            format!("1/{:16x}/ffffffffffffffff", 20.0_f64.to_bits())
+        );
     }
 }
