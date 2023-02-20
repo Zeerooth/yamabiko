@@ -3,10 +3,13 @@ use std::{fmt::Display, path::Path};
 use git2::{Index as GitIndex, IndexEntry, IndexTime, Oid, Repository};
 use parking_lot::MutexGuard;
 
+use crate::field::Field;
+
 #[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
 pub enum IndexType {
     Numeric,
     Sequential,
+    Collection,
 }
 
 impl IndexType {
@@ -25,8 +28,9 @@ impl Display for IndexType {
             f,
             "{}",
             match self {
-                IndexType::Numeric => "numeric",
-                IndexType::Sequential => "sequential",
+                Self::Numeric => "numeric",
+                Self::Sequential => "sequential",
+                Self::Collection => "collection",
             }
         )
     }
@@ -64,7 +68,16 @@ impl Index {
         self.indexed_field.as_str()
     }
 
-    pub fn create_entry<'a>(&self, repo: &'a MutexGuard<Repository>, oid: Oid, value: &str) {
+    pub fn indexes_given_field(&self, field: &Field) -> bool {
+        match field {
+            Field::Int(_) => self.kind == IndexType::Numeric,
+            Field::Float(_) => self.kind == IndexType::Numeric,
+            Field::String(_) => self.kind == IndexType::Sequential,
+        }
+    }
+
+    pub fn create_entry<'a>(&self, repo: &'a MutexGuard<Repository>, oid: Oid, field: &Field) {
+        let value = field.to_index_value();
         let mut git_index = self.git_index(repo);
         let last_entry = git_index.find_prefix(format!("{}", &value));
         let next_value = match last_entry {

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::query::FieldType;
+use crate::field::Field;
 
 #[derive(Clone, Copy)]
 pub enum DataFormat {
@@ -13,36 +13,39 @@ pub enum DataFormat {
 impl DataFormat {
     pub fn extract_indexes_json(
         data: &serde_json::Value,
-        indexes: &mut HashMap<&crate::index::Index, Option<String>>,
+        indexes: &mut HashMap<&crate::index::Index, Option<Field>>,
     ) {
         for (k, v) in indexes.iter_mut() {
             if let Some(index_value) = data.get(k.indexed_field()) {
-                *v = match index_value {
-                    serde_json::Value::Null => todo!(),
-                    serde_json::Value::Bool(_) => todo!(),
-                    serde_json::Value::Number(_) => match index_value.as_f64() {
-                        Some(v) => Some(format!(
-                            "{}/{:16x}",
-                            match v.is_sign_positive() {
-                                true => "1",
-                                false => "0",
-                            },
-                            (v as f64).to_bits()
-                        )),
-                        None => None,
-                    },
-                    serde_json::Value::String(_) => Some(index_value.as_str().unwrap().to_string()),
-                    serde_json::Value::Array(_) => todo!(),
-                    serde_json::Value::Object(_) => todo!(),
+                if let Some(field) = Field::from_json_value(index_value) {
+                    if k.indexes_given_field(&field) {
+                        *v = Some(field);
+                    }
                 }
             }
+        }
+    }
+
+    pub fn serialize_with_indexes_raw(
+        &self,
+        data: &[u8],
+        indexes: &mut HashMap<&crate::index::Index, Option<Field>>,
+    ) -> String {
+        match self {
+            Self::Json => {
+                let v: serde_json::Value = serde_json::from_slice(&data).unwrap();
+                DataFormat::extract_indexes_json(&v, indexes);
+                serde_json::to_string(&v).unwrap()
+            }
+            #[cfg(feature = "yaml")]
+            Self::Yaml => serde_yaml::to_string(&data).unwrap(),
         }
     }
 
     pub fn serialize_with_indexes<T>(
         &self,
         data: T,
-        indexes: &mut HashMap<&crate::index::Index, Option<String>>,
+        indexes: &mut HashMap<&crate::index::Index, Option<Field>>,
     ) -> String
     where
         T: Serialize,
@@ -62,7 +65,7 @@ impl DataFormat {
         &self,
         data: &[u8],
         field: &str,
-        value: &FieldType,
+        value: &Field,
         comparison: std::cmp::Ordering,
     ) -> bool {
         match self {

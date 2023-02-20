@@ -13,7 +13,10 @@ use std::sync::Arc;
 use std::{collections::HashMap, path::Path};
 use tokio::runtime::{Handle, Runtime};
 
+use crate::field::Field;
+
 pub mod error;
+pub mod field;
 pub mod index;
 pub mod query;
 pub mod replica;
@@ -394,32 +397,26 @@ impl<'c> Collection<'c> {
     }
 
     fn populate_index<'a>(&self, repo: &'a MutexGuard<Repository>, index: &index::Index) {
-        let mut index_values: HashMap<&index::Index, Option<String>> = HashMap::new();
         let current_commit = Collection::current_commit(repo, "main").unwrap();
         current_commit
             .tree()
             .unwrap()
-            .walk(git2::TreeWalkMode::PreOrder, |_, entry| {
-                if entry.kind() != Some(ObjectType::Blob) {
+            .walk(git2::TreeWalkMode::PostOrder, |_, entry| {
+                if entry.kind() != Some(ObjectType::Blob)
+                    || entry.name().unwrap().ends_with(".index")
+                {
                     return TreeWalkResult::Skip;
                 }
+                let mut index_values: HashMap<&index::Index, Option<Field>> = HashMap::new();
                 index_values.insert(&index, None);
                 let oid = entry.id();
-                let tree_path = Collection::current_commit(&repo, "main")
-                    .map_err(|e| match e.code() {
-                        ErrorCode::NotFound => error::GetObjectError::InvalidOperationTarget,
-                        _ => e.into(),
-                    })
-                    .unwrap()
-                    .tree()
-                    .unwrap();
-                let obj = tree_path.get_id(oid).unwrap();
-                let blob = obj.to_object(&repo).unwrap();
+                let blob = entry.to_object(&repo).unwrap();
                 let blob_content = blob.as_blob().unwrap().content();
-                let index_val = self
-                    .data_format
-                    .serialize_with_indexes(blob_content, &mut index_values);
-                index.create_entry(&repo, oid, &index_val);
+                self.data_format
+                    .serialize_with_indexes_raw(blob_content, &mut index_values);
+                if let Some(v) = index_values.get(index).unwrap() {
+                    index.create_entry(&repo, oid, v);
+                }
                 TreeWalkResult::Ok
             })
             .unwrap();
@@ -568,7 +565,7 @@ impl<'c> Collection<'c> {
         path
     }
 
-    fn construct_oid_from_path(path: &str) -> Oid {
+    pub fn construct_oid_from_path(path: &str) -> Oid {
         Oid::from_str(&path[path.len() - 22..].replace("/", "")).unwrap()
     }
 
@@ -1135,5 +1132,37 @@ mod tests {
             String::from_utf8(index_values[4].path.clone()).unwrap(),
             format!("1/{:16x}/ffffffffffffffff", 20.0_f64.to_bits())
         );
+    }
+
+    #[test]
+    fn test_writing_to_correct_index() {
+        let (db, _td) = create_db();
+        db.add_index("str_val", IndexType::Numeric, OperationTarget::Main);
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("test")),
+            OperationTarget::Main,
+        );
+        let index_values: Vec<git2::IndexEntry> = db.index_list()[0]
+            .git_index(&db.repository.lock())
+            .iter()
+            .collect();
+        assert_eq!(index_values.len(), 0);
+    }
+
+    #[test]
+    fn test_index_population() {
+        let (db, _td) = create_db();
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("test")),
+            OperationTarget::Main,
+        );
+        db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
+        let index_values: Vec<git2::IndexEntry> = db.index_list()[0]
+            .git_index(&db.repository.lock())
+            .iter()
+            .collect();
+        assert_eq!(index_values.len(), 1);
     }
 }

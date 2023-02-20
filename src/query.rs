@@ -2,111 +2,13 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::ops::{BitAnd, BitOr};
 
-use git2::{IndexEntry, ObjectType, Oid, Repository, TreeWalkResult};
+use git2::{ObjectType, Oid, Repository, TreeWalkResult};
 use parking_lot::MutexGuard;
 
+use crate::field::Field;
 use crate::index::Index;
 use crate::serialization::DataFormat;
 use crate::Collection;
-
-#[derive(Debug, PartialEq)]
-pub enum FieldType {
-    Int(i64),
-    Float(f64),
-    String(String),
-}
-
-impl From<f64> for FieldType {
-    fn from(number: f64) -> Self {
-        Self::Float(number)
-    }
-}
-
-impl From<i64> for FieldType {
-    fn from(number: i64) -> Self {
-        Self::Int(number)
-    }
-}
-
-impl From<String> for FieldType {
-    fn from(text: String) -> Self {
-        Self::String(text)
-    }
-}
-
-impl From<&str> for FieldType {
-    fn from(text: &str) -> Self {
-        Self::String(text.to_owned())
-    }
-}
-
-impl PartialEq<serde_json::Value> for FieldType {
-    fn eq(&self, other: &serde_json::Value) -> bool {
-        match self {
-            FieldType::Float(f) => other.as_f64().map(|x| &x == f).unwrap_or(false),
-            FieldType::Int(i) => other.as_i64().map(|x| &x == i).unwrap_or(false),
-            FieldType::String(s) => other.as_str().map(|x| &x == s).unwrap_or(false),
-        }
-    }
-}
-
-impl PartialOrd<serde_json::Value> for FieldType {
-    fn partial_cmp(&self, other: &serde_json::Value) -> Option<Ordering> {
-        match self {
-            FieldType::Float(f) => other.as_f64().map(|x| x.partial_cmp(f)).unwrap_or(None),
-            FieldType::Int(i) => other.as_i64().map(|x| x.partial_cmp(i)).unwrap_or(None),
-            FieldType::String(s) => other.as_str().map(|x| x.partial_cmp(s)).unwrap_or(None),
-        }
-    }
-}
-
-impl PartialOrd<Self> for FieldType {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match self {
-            FieldType::Float(sf) => match other {
-                FieldType::Int(oi) => (*oi as f64).partial_cmp(sf),
-                FieldType::Float(of) => of.partial_cmp(sf),
-                FieldType::String(_) => None,
-            },
-            FieldType::Int(si) => match other {
-                FieldType::Int(oi) => oi.partial_cmp(si),
-                FieldType::Float(of) => (of).partial_cmp(&(*si as f64)),
-                FieldType::String(_) => None,
-            },
-            FieldType::String(ss) => match other {
-                FieldType::String(os) => os.partial_cmp(ss),
-                _ => None,
-            },
-        }
-    }
-}
-
-impl ToString for FieldType {
-    fn to_string(&self) -> String {
-        match self {
-            Self::Int(v) => v.to_string(),
-            Self::String(v) => v.to_string(),
-            Self::Float(v) => v.to_string(),
-        }
-    }
-}
-
-impl FieldType {
-    fn from_index_entry(index_entry: &IndexEntry) -> Option<Self> {
-        let val = String::from_utf8_lossy(Index::extract_value(&index_entry));
-        let res = match index_entry.ino {
-            0 => Some(Self::from(
-                f64::from_bits(u64::from_str_radix(&val, 16).ok()?) as i64,
-            )),
-            1 => Some(Self::from(val.to_string())),
-            2 => Some(Self::from(f64::from_bits(
-                u64::from_str_radix(&val, 16).ok()?,
-            ))),
-            _ => None,
-        };
-        res
-    }
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolutionStrategy {
@@ -118,7 +20,7 @@ pub struct QueryBuilder {
     query: Option<QueryGroup>,
 }
 
-pub fn q<V: Into<FieldType>>(field: &str, comparator: Ordering, value: V) -> QueryGroup {
+pub fn q<V: Into<Field>>(field: &str, comparator: Ordering, value: V) -> QueryGroup {
     QueryGroup {
         next_group: Vec::new(),
         field_query: FieldQuery {
@@ -209,7 +111,7 @@ impl QueryGroup {
                         Some(v) => v,
                         None => break,
                     };
-                    let val = FieldType::from_index_entry(&entry);
+                    let val = Field::from_index_entry(&entry);
                     match val {
                         Some(v) => {
                             let cmp = self.field_query.value.partial_cmp(&v);
@@ -311,14 +213,14 @@ enum Chain {
 #[derive(Debug)]
 struct FieldQuery {
     field: String,
-    value: FieldType,
+    value: Field,
     comparator: Ordering,
 }
 
 impl FieldQuery {
     fn prefix_query(&self) -> String {
         match &self.value {
-            FieldType::Int(v) => format!(
+            Field::Int(v) => format!(
                 "{}/{:16x}",
                 match v.is_positive() {
                     true => 1,
@@ -326,7 +228,7 @@ impl FieldQuery {
                 },
                 (*v as f64).to_bits()
             ),
-            FieldType::Float(v) => format!(
+            Field::Float(v) => format!(
                 "{}/{:16x}",
                 match v.is_sign_positive() {
                     true => 1,
@@ -334,7 +236,7 @@ impl FieldQuery {
                 },
                 v.to_bits()
             ),
-            FieldType::String(s) => s.to_owned(),
+            Field::String(s) => s.to_owned(),
         }
     }
 }
