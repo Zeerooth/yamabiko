@@ -3,6 +3,7 @@ use std::{fmt::Display, path::Path};
 use git2::{Index as GitIndex, IndexEntry, IndexTime, Oid, Repository};
 use parking_lot::MutexGuard;
 
+use crate::debug;
 use crate::field::Field;
 
 #[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
@@ -97,7 +98,7 @@ impl Index {
             ctime: IndexTime::new(0, 0),
             mtime: IndexTime::new(0, 0),
             dev: 0,
-            ino: 0,
+            ino: field.to_ino_number(),
             mode: 0o100644,
             uid: 0,
             gid: 0,
@@ -107,8 +108,24 @@ impl Index {
             flags_extended: 0,
             path: path.as_bytes().to_vec(),
         };
+        debug!("creating a new entry: {:?}", entry);
         git_index.add(&entry).unwrap();
         git_index.write().unwrap();
+    }
+
+    pub fn delete_entry<'a>(&self, repo: &'a MutexGuard<Repository>, oid: Oid) -> bool {
+        // this method is going to be terribly slow on large indexes but it works for now
+        let mut git_index = self.git_index(repo);
+        debug!("removing an entry with oid: {}", oid);
+        if let Some(entry) = git_index.iter().find(|x| x.id == oid) {
+            git_index
+                .remove(&Path::new(&String::from_utf8(entry.path).unwrap()), 0)
+                .unwrap();
+            git_index.write().unwrap();
+            return true;
+        }
+        git_index.write().unwrap();
+        false
     }
 
     pub fn git_index<'a>(&self, repo: &'a MutexGuard<Repository>) -> GitIndex {

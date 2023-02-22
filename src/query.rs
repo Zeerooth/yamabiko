@@ -8,7 +8,7 @@ use parking_lot::MutexGuard;
 use crate::field::Field;
 use crate::index::Index;
 use crate::serialization::DataFormat;
-use crate::Collection;
+use crate::{debug, Collection};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolutionStrategy {
@@ -112,6 +112,7 @@ impl QueryGroup {
                         None => break,
                     };
                     let val = Field::from_index_entry(&entry);
+                    debug!("found the following value in the index: {:?}", val);
                     match val {
                         Some(v) => {
                             let cmp = self.field_query.value.partial_cmp(&v);
@@ -274,12 +275,17 @@ impl QueryBuilder {
         let all_indexes = Collection::index_field_map(&repo);
         let query = self.query.as_ref().unwrap();
         let resolution_strategy = query.resolution_strategy(&all_indexes);
+        debug!(
+            "determined the resolution strategy: {:?}",
+            resolution_strategy
+        );
         let dbg_resolution_strategy = resolution_strategy.clone();
         let indexes_to_use = match resolution_strategy {
             ResolutionStrategy::Scan => Vec::new(),
             ResolutionStrategy::UseIndexes(ind) => ind,
         };
         let mut keys = HashSet::new();
+        debug!("executing a query: {:?}", query);
         query.resolve_with_indexes(
             &mut indexes_to_use.iter(),
             &repo,

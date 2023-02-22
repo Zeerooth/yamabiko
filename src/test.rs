@@ -2,6 +2,8 @@ use crate::serialization::DataFormat;
 
 use super::*;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use simple_logger::SimpleLogger;
 use tempfile::TempDir;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
@@ -43,6 +45,8 @@ impl ComplexDbStruct {
 }
 
 pub fn create_db<'a>() -> (Collection<'a>, TempDir) {
+    #[cfg(test)]
+    let _ = SimpleLogger::new().init();
     let tmpdir = tempfile::tempdir().unwrap();
     (
         Collection::create(tmpdir.path(), DataFormat::Json).unwrap(),

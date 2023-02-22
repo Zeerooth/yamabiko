@@ -18,6 +18,7 @@ use crate::field::Field;
 pub mod error;
 pub mod field;
 pub mod index;
+pub mod logging;
 pub mod query;
 pub mod replica;
 pub mod serialization;
@@ -191,6 +192,7 @@ impl<'c> Collection<'c> {
         {
             let mut root_tree = commit.tree().unwrap();
             for (key, value) in items {
+                debug!("set a key '{}'", key.as_ref());
                 let mut index_values = HashMap::new();
                 for index in indexes.iter() {
                     index_values.insert(index, None);
@@ -210,6 +212,8 @@ impl<'c> Collection<'c> {
                 for (index, value) in index_values {
                     if let Some(val) = value {
                         index.create_entry(&repo, hash, &val);
+                    } else {
+                        index.delete_entry(&repo, hash);
                     }
                 }
             }
@@ -589,6 +593,7 @@ pub mod test;
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Ordering::*;
     use std::collections::HashMap;
 
     use git2::{BranchType, Repository};
@@ -596,6 +601,7 @@ mod tests {
     use crate::{
         error,
         index::{Index, IndexType},
+        query::{q, QueryBuilder},
         replica::ReplicationMethod,
         OperationTarget,
     };
@@ -1164,5 +1170,39 @@ mod tests {
             .iter()
             .collect();
         assert_eq!(index_values.len(), 1);
+    }
+
+    #[test]
+    fn test_index_removes_entries_on_update() {
+        let (db, _td) = create_db();
+        db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
+        let query = QueryBuilder::new().query(q("str_val", Equal, "test"));
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("test")),
+            OperationTarget::Main,
+        );
+        assert_eq!(query.execute(&db).count, 1);
+        db.set("a", FloatyDbStruct { num_val: 69.0 }, OperationTarget::Main);
+        assert_eq!(query.execute(&db).count, 0);
+    }
+
+    #[test]
+    fn test_index_entry_update() {
+        let (db, _td) = create_db();
+        db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
+        let query = QueryBuilder::new().query(q("str_val", Equal, "test"));
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("test")),
+            OperationTarget::Main,
+        );
+        assert_eq!(query.execute(&db).count, 1);
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("test2")),
+            OperationTarget::Main,
+        );
+        assert_eq!(query.execute(&db).count, 1);
     }
 }
