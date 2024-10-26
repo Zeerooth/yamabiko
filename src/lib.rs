@@ -60,6 +60,9 @@ impl<'c> Collection<'c> {
     ) -> Result<Self, error::CollectionInitError> {
         let repo = Repository::init_bare(path).unwrap();
         {
+            let mut cfg = repo.config()?;
+            cfg.set_str("user.name", "yamabiko")?;
+            cfg.set_str("user.email", "yamabiko@localhost")?;
             let index = &mut repo.index()?;
             let id = index.write_tree()?;
             let tree = repo.find_tree(id)?;
