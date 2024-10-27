@@ -1,12 +1,13 @@
 use git2::build::CheckoutBuilder;
 use git2::{
-    BranchType, Commit, ErrorCode, FileFavor, Index, MergeOptions, ObjectType, Oid, PushOptions,
-    RebaseOptions, Repository, RepositoryInitOptions, Signature, Time, Tree, TreeBuilder,
-    TreeWalkResult,
+    BranchType, Commit, Cred, ErrorCode, FileFavor, Index, MergeOptions, ObjectType, Oid,
+    PushOptions, RebaseOptions, RemoteCallbacks, Repository, RepositoryInitOptions, Signature,
+    Time, Tree, TreeBuilder, TreeWalkResult,
 };
 use parking_lot::{Mutex, MutexGuard};
 use rand::distributions::Alphanumeric;
 use rand::prelude::*;
+use replica::RemoteCredentials;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::str;
@@ -44,14 +45,14 @@ pub enum ConflictResolution {
     Abort,
 }
 
-pub struct Collection<'c> {
+pub struct Collection {
     repository: Arc<Mutex<Repository>>,
-    replicas: Vec<replica::Replica<'c>>,
+    replicas: Vec<replica::Replica>,
     handle: Handle,
     data_format: serialization::DataFormat,
 }
 
-impl<'c> Collection<'c> {
+impl Collection {
     pub fn load_existing(
         path: &Path,
         data_format: serialization::DataFormat,
@@ -118,7 +119,7 @@ impl<'c> Collection<'c> {
         name: &str,
         url: &str,
         replication_method: replica::ReplicationMethod,
-        push_options: Option<PushOptions<'c>>,
+        credentials: Option<RemoteCredentials>,
     ) {
         if self.replicas.iter().any(|x| x.remote.as_str() == name) {
             return;
@@ -130,8 +131,12 @@ impl<'c> Collection<'c> {
         self.replicas.push(replica::Replica {
             remote: remote.name().unwrap().to_string(),
             replication_method,
-            push_options,
+            credentials,
         });
+    }
+
+    pub fn replicas(&self) -> &Vec<replica::Replica> {
+        &self.replicas
     }
 
     pub fn get<D>(
@@ -503,10 +508,26 @@ impl<'c> Collection<'c> {
             }
             let data = Arc::clone(&self.repository);
             let replica_remote = replica.remote.clone();
+            let credentials = replica.credentials.clone();
             let task = self.handle.spawn(async move {
                 let repo = data.lock();
                 let mut remote = repo.find_remote(&replica_remote)?;
-                remote.push(&["refs/heads/main"], None)
+                let mut callbacks = RemoteCallbacks::new();
+                if let Some(ref cred) = credentials {
+                    callbacks.credentials(|_, username_from_url, _| {
+                        Cred::ssh_key(
+                            cred.username
+                                .as_deref()
+                                .unwrap_or(username_from_url.unwrap_or("git")),
+                            cred.publickey.as_deref(),
+                            cred.privatekey.as_path(),
+                            cred.passphrase.as_deref(),
+                        )
+                    });
+                }
+                let mut push_options = PushOptions::new();
+                push_options.remote_callbacks(callbacks);
+                remote.push(&["refs/heads/main"], Some(&mut push_options))
             });
             remote_push_results.insert(replica.remote.clone(), task);
         }

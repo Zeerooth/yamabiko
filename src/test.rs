@@ -44,12 +44,11 @@ impl ComplexDbStruct {
     }
 }
 
-pub fn create_db<'a>() -> (Collection<'a>, TempDir) {
+pub fn create_db() -> (Collection, TempDir) {
     #[cfg(test)]
     let _ = SimpleLogger::new().init();
     let tmpdir = Builder::new().keep(false).tempdir().unwrap();
-    let path = tmpdir.path();
-    debug!("Using tmpdir {:?} for this test", path.to_str());
+    debug!("Using tmpdir {:?} for this test", tmpdir.path().to_str());
     (
         Collection::create(tmpdir.path(), DataFormat::Json).unwrap(),
         tmpdir,
