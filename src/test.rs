@@ -1,7 +1,6 @@
 use crate::serialization::DataFormat;
 
 use super::*;
-use log::debug;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use simple_logger::SimpleLogger;
