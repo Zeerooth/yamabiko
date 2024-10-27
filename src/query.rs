@@ -150,10 +150,14 @@ impl QueryGroup {
                 }
             }
             None => {
+                debug!("No index; Scanning...");
                 if results.is_empty() {
                     main_tree
                         .walk(git2::TreeWalkMode::PostOrder, |_, entry| {
-                            if entry.kind() != Some(ObjectType::Blob) {
+                            debug!("Found an entry {}", entry.id());
+                            let entry_kind = entry.kind();
+                            if entry_kind != Some(ObjectType::Blob) {
+                                debug!("Type is {:?}, skipping", entry_kind);
                                 return TreeWalkResult::Skip;
                             }
                             let blob = entry.to_object(repo).unwrap();
@@ -327,6 +331,9 @@ mod tests {
             .query(q("str_val", Equal, "value") | q("non_existing_val", Equal, "a"))
             .execute(&db);
         assert_eq!(query_result.count, 1);
+        let oid = query_result.results.first().unwrap();
+        let obj = db.get_by_oid::<SampleDbStruct>(*oid);
+        assert_eq!(obj.unwrap().unwrap().str_val, "value");
     }
 
     #[test]

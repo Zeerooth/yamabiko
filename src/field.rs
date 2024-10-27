@@ -40,7 +40,7 @@ impl PartialEq<serde_json::Value> for Field {
         match self {
             Field::Float(f) => other.as_f64().map(|x| &x == f).unwrap_or(false),
             Field::Int(i) => other.as_i64().map(|x| &x == i).unwrap_or(false),
-            Field::String(s) => other.as_str().map(|x| &x == s).unwrap_or(false),
+            Field::String(s) => other.as_str().map(|x| x == s).unwrap_or(false),
         }
     }
 }
@@ -93,8 +93,8 @@ impl Field {
     ///
     /// Returns `None` if the convesion cannot be performed
     pub fn from_index_entry(index_entry: &IndexEntry) -> Option<Self> {
-        let val = String::from_utf8_lossy(Index::extract_value(&index_entry));
-        let res = match index_entry.ino {
+        let val = String::from_utf8_lossy(Index::extract_value(index_entry));
+        match index_entry.ino {
             0 => Some(Self::from(
                 f64::from_bits(u64::from_str_radix(&val, 16).ok()?) as i64,
             )),
@@ -103,8 +103,7 @@ impl Field {
                 u64::from_str_radix(&val, 16).ok()?,
             ))),
             _ => None,
-        };
-        res
+        }
     }
 
     pub fn to_index_value(&self) -> String {
@@ -143,8 +142,8 @@ impl Field {
             serde_json::Value::Bool(_) => todo!(),
             serde_json::Value::Number(v) => v
                 .as_i64()
-                .map(|x| Self::Int(x))
-                .or_else(|| v.as_f64().map(|x| Self::Float(x))),
+                .map(Self::Int)
+                .or_else(|| v.as_f64().map(Self::Float)),
             serde_json::Value::String(v) => Some(Self::String(v.as_str().to_string())),
             serde_json::Value::Array(_) => todo!(),
             serde_json::Value::Object(_) => todo!(),

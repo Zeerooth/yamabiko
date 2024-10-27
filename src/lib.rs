@@ -175,31 +175,16 @@ impl Collection {
         Ok(None)
     }
 
-    pub fn get_by_oid<D>(
-        &self,
-        oid: Oid,
-        target: OperationTarget,
-    ) -> Result<Option<D>, error::GetObjectError>
+    /// Beware that this method only works on the main branch
+    /// Should be faster than the normal get by key if the blob is in cache
+    pub fn get_by_oid<D>(&self, oid: Oid) -> Result<Option<D>, error::GetObjectError>
     where
         D: DeserializeOwned,
     {
-        let branch = match target {
-            OperationTarget::Main => "main",
-            OperationTarget::Transaction(t) => t,
-        };
+        debug!("Looking up oid {}", oid);
         let repo = self.repository.lock();
-        let tree = Collection::current_commit(&repo, branch)
-            .map_err(|e| match e.code() {
-                ErrorCode::NotFound => error::GetObjectError::InvalidOperationTarget,
-                _ => e.into(),
-            })?
-            .tree()?;
-        let tree_path = tree.get_id(oid);
-        if let Some(tree_entry) = tree_path {
-            let obj = tree_entry.to_object(&repo)?;
-            let blob = obj
-                .as_blob()
-                .ok_or_else(|| error::GetObjectError::CorruptedObject)?;
+        let blob = repo.find_blob(oid);
+        if let Ok(blob) = blob {
             let blob_content = blob.content().to_owned();
             return Ok(Some(
                 self.data_format
@@ -499,7 +484,7 @@ impl Collection {
         for replica in &self.replicas {
             let replicate = match replica.replication_method {
                 replica::ReplicationMethod::All => true,
-                replica::ReplicationMethod::Random(chance) => rand_res > chance,
+                replica::ReplicationMethod::Random(chance) => rand_res < chance,
                 _ => true,
             };
             if !replicate {
@@ -633,6 +618,18 @@ impl Collection {
             path.push('/');
         });
         path.push_str(key);
+        path
+    }
+
+    pub fn prefix_from_oid(oid: &Oid) -> String {
+        let hash_bytes = oid.as_bytes();
+        let mut path = String::new();
+        (0..2).for_each(|x| {
+            let val = &hash_bytes[x];
+            path.push_str(format!("{val:x}").as_ref());
+            path.push('/');
+        });
+        debug!("Constructed prefix {}", path);
         path
     }
 
