@@ -52,16 +52,31 @@ pub struct Collection<'c> {
 }
 
 impl<'c> Collection<'c> {
-    pub fn load(
+    pub fn load_existing(
         path: &Path,
         data_format: serialization::DataFormat,
     ) -> Result<Self, error::CollectionInitError> {
         Ok(Self {
-            repository: Arc::new(Mutex::new(Repository::open(path)?)),
+            repository: Arc::new(Mutex::new(Repository::open_bare(path)?)),
             replicas: Vec::new(),
             handle: Collection::get_runtime_handle().0,
             data_format,
         })
+    }
+
+    pub fn load_or_create(
+        path: &Path,
+        data_format: serialization::DataFormat,
+    ) -> Result<Self, error::CollectionInitError> {
+        match Self::load_existing(path, data_format) {
+            Ok(repo) => Ok(repo),
+            Err(initerr) => match initerr {
+                error::CollectionInitError::InternalGitError(error) => match error.code() {
+                    ErrorCode::NotFound => Self::create(path, data_format),
+                    _ => Err(error::CollectionInitError::InternalGitError(error)),
+                },
+            },
+        }
     }
 
     pub fn create(
@@ -208,8 +223,10 @@ impl<'c> Collection<'c> {
         let commit = Collection::current_commit(&repo, branch).unwrap();
         {
             let mut root_tree = commit.tree().unwrap();
+            let mut counter = 0;
             for (key, value) in items {
-                debug!("set a key '{}'", key.as_ref());
+                counter += 1;
+                debug!("set #{} key '{}'", counter, key.as_ref());
                 let mut index_values = HashMap::new();
                 for index in indexes.iter() {
                     index_values.insert(index, None);
@@ -235,8 +252,9 @@ impl<'c> Collection<'c> {
                 }
             }
             let signature = Self::signature();
+            let commit_msg = format!("set {} items on {}", counter, branch);
             let new_commit = repo
-                .commit_create_buffer(&signature, &signature, "update db", &root_tree, &[&commit])
+                .commit_create_buffer(&signature, &signature, &commit_msg, &root_tree, &[&commit])
                 .unwrap();
             let commit_obj = repo
                 .commit_signed(str::from_utf8(&new_commit).unwrap(), "", None)
@@ -244,7 +262,7 @@ impl<'c> Collection<'c> {
             let mut branch_ref = repo.find_branch(branch, BranchType::Local).unwrap();
             branch_ref
                 .get_mut()
-                .set_target(commit_obj, "update db")
+                .set_target(commit_obj, &commit_msg)
                 .unwrap();
         }
         drop(commit);
@@ -336,7 +354,7 @@ impl<'c> Collection<'c> {
                     let mut branch_ref = repo.find_branch("main", BranchType::Local).unwrap();
                     branch_ref
                         .get_mut()
-                        .set_target(commit, "update db")
+                        .set_target(commit, format!("apply transaction {}", name).as_str())
                         .unwrap();
                 };
                 break;
