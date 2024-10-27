@@ -4,7 +4,7 @@ Embedded database based on git
 
 ## Desclaimer
 
-*Do not use it for storing important data! yamabiko may still be unstable in certain areas and may accidentally erase data*
+*Do not use it for storing important data! yamabiko works for my use case, but it's not thoroughly tested yet.*
 
 ## Features
 
@@ -30,8 +30,10 @@ pub struct LogStruct {
 #[tokio::main]
 async fn main() {
     // Load or create a repository for storing our data
-    // You have to stick to one data format for a single repo, but the exact contents of each record are yours to determine and handle
-    // You can mix different structs for de/serialization, but it's a good idea to have a separate collection for each type
+    // You have to stick to one data format for a single repo,
+    // but the exact contents of each record are yours to determine and handle
+    // You can mix different structs for de/serialization,
+    // but it's a good idea to have a separate collection for each type
     let mut db = Collection::load_or_create(Path::new("/tmp/repo"), DataFormat::Json).unwrap();
 
     // Setting credentials is only necessary if you plan to replicate data to a remote repo as a backup
@@ -43,7 +45,8 @@ async fn main() {
     };
 
     // If you plan to have frequent data updates then ReplicationMethod::All is probably a bad idea
-    // Syncing with remote repos is slow and frequent requests are going to get you rate limited if you use an external service
+    // Syncing with remote repos is slow
+    // And frequent requests are going to get you rate limited if you use an external service
     // Consider using ReplicationMethod::Random(0.05) - only ~5% of commits are going to result in a sync 
     db.add_replica(
         "gh_backup",
@@ -71,12 +74,14 @@ async fn main() {
     let res = db.set(key, to_save, yamabiko::OperationTarget::Main);
     
     for r in res {
-        // This is entirely optional. If you don't await then the sync will happen in the background and you can continue execution.
+        // This is entirely optional.
+        // If you don't await then the sync will happen in the background and you can continue execution.
         let await_res = r.1.await;
         println!("{:?}", await_res);
     }
 
-    // QueryBuilder is not very powerful yet, but it allows for making simple queries on data saved in the collection
+    // QueryBuilder is not very powerful yet,
+    // but it allows for making simple queries on data saved in the collection
     let query = QueryBuilder::new()
         .query(q("message", Equal, "GET /index.html") & q("timestamp", Less, 100000))
         .execute(&db);
@@ -87,9 +92,12 @@ async fn main() {
         println!("{:?}", obj);
     }
 
-    // Lastly, by default queries are going to scan the entire repository, deserialize the data and compare the fields to find the results
-    // For larger collections and queries this is going to be !extremely! slow. Make sure to create relevant indexes to make queries faster
+    // Lastly, by default queries are going to scan the entire repository,
+    // deserialize the data and compare the fields to find the results
+    // For larger collections and queries this is going to be !extremely! slow.
+    // Make sure to create relevant indexes to make queries faster
     db.add_index("timestamp", IndexType::Numeric, OperationTarget::Main);
+}
 ```
 
 ## Examples & Tests
