@@ -525,30 +525,54 @@ impl Collection {
         key: &str,
         blob: Oid,
     ) -> Result<Oid, git2::Error> {
-        let mut trees: Vec<TreeBuilder> = vec![repo.treebuilder(Some(root_tree))?];
-        for part in 0..2 {
-            let parent_tree = trees.pop().unwrap();
-            let hex_part = oid[part];
-            let mut tree_builder = parent_tree
-                .get(format!("{hex_part:x}"))
-                .unwrap()
-                .map(|x| repo.treebuilder(Some(&x.to_object(repo).unwrap().into_tree().unwrap())))
-                .unwrap_or_else(|| repo.treebuilder(None))?;
-            if part == 1 {
-                tree_builder.insert(key, blob, 0o100644)?;
+        let mut trees: Vec<(String, TreeBuilder)> =
+            vec![("".to_string(), repo.treebuilder(Some(root_tree))?)];
+        let natural_tree = key.contains("/");
+        if natural_tree {
+            let mut iterator = key.split("/").peekable();
+            while let Some(part) = iterator.next() {
+                let (parent_name, mut parent_tree) = trees.pop().unwrap();
+                if iterator.peek().is_none() {
+                    parent_tree.insert(part, blob, 0o100644)?;
+                    trees.push((parent_name, parent_tree));
+                } else {
+                    let tree_builder = parent_tree
+                        .get(part)
+                        .unwrap()
+                        .map(|x| {
+                            repo.treebuilder(Some(&x.to_object(repo).unwrap().into_tree().unwrap()))
+                        })
+                        .unwrap_or_else(|| repo.treebuilder(None))?;
+                    trees.push((parent_name, parent_tree));
+                    trees.push((part.to_string(), tree_builder));
+                }
             }
-            trees.push(parent_tree);
-            trees.push(tree_builder);
+        } else {
+            for part in 0..2 {
+                let (parent_name, parent_tree) = trees.pop().unwrap();
+                let hex_part = oid[part];
+                let name = format!("{hex_part:x}");
+                let mut tree_builder = parent_tree
+                    .get(&name)
+                    .unwrap()
+                    .map(|x| {
+                        repo.treebuilder(Some(&x.to_object(repo).unwrap().into_tree().unwrap()))
+                    })
+                    .unwrap_or_else(|| repo.treebuilder(None))?;
+                if part == 1 {
+                    tree_builder.insert(key, blob, 0o100644)?;
+                }
+                trees.push((parent_name, parent_tree));
+                trees.push((name, tree_builder));
+            }
         }
-        let mut index: usize = 2;
+
         loop {
-            let self_tree = trees.pop().unwrap();
-            if let Some(mut parent_tree) = trees.pop() {
+            let (self_name, self_tree) = trees.pop().unwrap();
+            if let Some((parent_name, mut parent_tree)) = trees.pop() {
                 let tree_id = self_tree.write()?;
-                index -= 1;
-                let hex_part = oid[index];
-                parent_tree.insert(format!("{hex_part:x}"), tree_id, 0o040000)?;
-                trees.push(parent_tree);
+                parent_tree.insert(&self_name, tree_id, 0o040000)?;
+                trees.push((parent_name, parent_tree));
             } else {
                 return self_tree.write();
             }
@@ -609,6 +633,9 @@ impl Collection {
     }
 
     fn construct_path_to_key(key: &str) -> String {
+        if key.contains("/") {
+            return key.to_string();
+        }
         let hash = Oid::hash_object(ObjectType::Blob, key.as_bytes()).unwrap();
         let hash_bytes = hash.as_bytes();
         let mut path = String::new();
@@ -697,19 +724,19 @@ mod tests {
         let (db, _td) = create_db();
         let mut hm = HashMap::new();
         hm.insert(
-            "a",
+            "pref/a",
             SampleDbStruct {
                 str_val: String::from("initial a value"),
             },
         );
         hm.insert(
-            "b",
+            "pref/b",
             SampleDbStruct {
                 str_val: String::from("initial b value"),
             },
         );
         hm.insert(
-            "c",
+            "pref/c",
             SampleDbStruct {
                 str_val: String::from("initial c value"),
             },
@@ -717,27 +744,30 @@ mod tests {
         let mut hm2 = hm.clone();
         db.set_batch(hm, OperationTarget::Main);
         assert_eq!(
-            db.get::<SampleDbStruct>("a", OperationTarget::Main)
+            db.get::<SampleDbStruct>("pref/a", OperationTarget::Main)
                 .unwrap()
                 .unwrap(),
             SampleDbStruct::new(String::from("initial a value"))
         );
         assert_eq!(
-            db.get::<SampleDbStruct>("b", OperationTarget::Main)
+            db.get::<SampleDbStruct>("pref/b", OperationTarget::Main)
                 .unwrap()
                 .unwrap(),
             SampleDbStruct::new(String::from("initial b value"))
         );
         assert_eq!(
-            db.get::<SampleDbStruct>("c", OperationTarget::Main)
+            db.get::<SampleDbStruct>("pref/c", OperationTarget::Main)
                 .unwrap()
                 .unwrap(),
             SampleDbStruct::new(String::from("initial c value"))
         );
-        hm2.insert("a", SampleDbStruct::new(String::from("changed a value")));
+        hm2.insert(
+            "pref/a",
+            SampleDbStruct::new(String::from("changed a value")),
+        );
         db.set_batch(hm2, OperationTarget::Main);
         assert_eq!(
-            db.get::<SampleDbStruct>("a", OperationTarget::Main)
+            db.get::<SampleDbStruct>("pref/a", OperationTarget::Main)
                 .unwrap()
                 .unwrap(),
             SampleDbStruct::new(String::from("changed a value"))

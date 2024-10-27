@@ -59,13 +59,16 @@ async fn main() {
  
     let to_save = LogStruct {
         addr: String::from("8.8.8.8"),
-        timestamp: 99999,
+        timestamp: 9999999,
         message: String::from("GET /index.html")
     };
 
-    // Choosing a good key is important. The simplest way would be to go with something like UUID
-    // However, if you have the possibility then it's much better to separate the key into subtrees
-    // For example: "8.8.8.8/99999/GET", "AS/JP/Kyoto/Fushimi" - this makes queries, lookups and sets much faster
+    // Choosing a good key is important. If you have the possibility to do so
+    // Then it's much better to separate the key into subtrees in a logical way
+    // For example: "AS/JP/Kyoto" is good key for storing cities or "2024/10/10/65823" for time based data
+    // This makes queries, lookups and sets much faster and the collection becomes more organized
+    // Don't worry though! If you need to store flat keys, like with usernames for example,
+    // yamabiko will generate artificial subtrees based on hash and handle it internally
     let key = format!("{}/{}", addr, timestamp).as_str();
 
     // "set" will save the data as a blob and make a new commit
