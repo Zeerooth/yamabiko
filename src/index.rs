@@ -14,11 +14,12 @@ pub enum IndexType {
 }
 
 impl IndexType {
-    pub fn from_name(name: &str) -> Result<Self, ()> {
+    pub fn from_name(name: &str) -> Result<Self, String> {
         match name {
             "numeric" => Ok(Self::Numeric),
             "sequential" => Ok(Self::Sequential),
-            _ => Err(()),
+            "collection" => Ok(Self::Collection),
+            _ => Err(String::from("No such index type")),
         }
     }
 }
@@ -53,12 +54,12 @@ impl Index {
         }
     }
 
-    pub fn from_name(name: &str) -> Result<Self, ()> {
+    pub fn from_name(name: &str) -> Result<Self, String> {
         let token_list = name.rsplit_once(".").unwrap().0.rsplit_once("#");
         if let Some(tokens) = token_list {
             return Ok(Self::new(name, tokens.0, IndexType::from_name(tokens.1)?));
         }
-        Err(())
+        Err(String::from("No such index"))
     }
 
     pub fn name(&self) -> &str {
@@ -77,15 +78,15 @@ impl Index {
         }
     }
 
-    pub fn create_entry<'a>(&self, repo: &'a MutexGuard<Repository>, oid: Oid, field: &Field) {
+    pub fn create_entry(&self, repo: &MutexGuard<Repository>, oid: Oid, field: &Field) {
         let value = field.to_index_value();
         let mut git_index = self.git_index(repo);
-        let last_entry = git_index.find_prefix(format!("{}", &value));
+        let last_entry = git_index.find_prefix(&value);
         let next_value = match last_entry {
             Ok(v) => {
                 let path = git_index.get(v).unwrap().path;
                 let num = u64::from_str_radix(
-                    &String::from_utf8(path.split_at(path.len() - 16).1.to_vec()).unwrap(),
+                    core::str::from_utf8(path.split_at(path.len() - 16).1).unwrap(),
                     16,
                 )
                 .unwrap();
@@ -113,13 +114,13 @@ impl Index {
         git_index.write().unwrap();
     }
 
-    pub fn delete_entry<'a>(&self, repo: &'a MutexGuard<Repository>, oid: Oid) -> bool {
+    pub fn delete_entry(&self, repo: &MutexGuard<Repository>, oid: Oid) -> bool {
         // this method is going to be terribly slow on large indexes but it works for now
         let mut git_index = self.git_index(repo);
         debug!("removing an entry with oid: {}", oid);
         if let Some(entry) = git_index.iter().find(|x| x.id == oid) {
             git_index
-                .remove(&Path::new(&String::from_utf8(entry.path).unwrap()), 0)
+                .remove(Path::new(&String::from_utf8(entry.path).unwrap()), 0)
                 .unwrap();
             git_index.write().unwrap();
             return true;
@@ -128,7 +129,7 @@ impl Index {
         false
     }
 
-    pub fn git_index<'a>(&self, repo: &'a MutexGuard<Repository>) -> GitIndex {
+    pub fn git_index(&self, repo: &MutexGuard<Repository>) -> GitIndex {
         GitIndex::open(
             Path::new(repo.path())
                 .join(".index")

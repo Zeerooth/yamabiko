@@ -209,7 +209,7 @@ impl Collection {
         Ok(None)
     }
 
-    pub fn set_batch<'a, S, I, T>(
+    pub fn set_batch<S, I, T>(
         &self,
         items: I,
         target: OperationTarget,
@@ -405,13 +405,12 @@ impl Collection {
         let index_name = format!("{}#{}.index", &field, kind);
         let existing_index = index_tree.get_name(&index_name);
         let index_obj = index::Index::from_name(&index_name).unwrap();
-        if let None = existing_index {
+        if existing_index.is_none() {
             {
                 let mut tb = repo.treebuilder(Some(&index_tree)).unwrap();
                 Self::ensure_index_dir_exists(&repo);
                 let mut index =
-                    Index::open(Path::new(&repo.path().join(".index").join(&index_name)).into())
-                        .unwrap();
+                    Index::open(Path::new(&repo.path().join(".index").join(&index_name))).unwrap();
                 let obj = index.write_tree_to(&repo).unwrap();
                 tb.insert(&index_name, obj, 0o040000).unwrap();
                 let new_root = tb.write().unwrap();
@@ -440,7 +439,7 @@ impl Collection {
         (index_obj, self.replicate())
     }
 
-    fn populate_index<'a>(&self, repo: &'a MutexGuard<Repository>, index: &index::Index) {
+    fn populate_index(&self, repo: &MutexGuard<Repository>, index: &index::Index) {
         let current_commit = Collection::current_commit(repo, "main").unwrap();
         current_commit
             .tree()
@@ -452,14 +451,14 @@ impl Collection {
                     return TreeWalkResult::Skip;
                 }
                 let mut index_values: HashMap<&index::Index, Option<Field>> = HashMap::new();
-                index_values.insert(&index, None);
+                index_values.insert(index, None);
                 let oid = entry.id();
-                let blob = entry.to_object(&repo).unwrap();
+                let blob = entry.to_object(repo).unwrap();
                 let blob_content = blob.as_blob().unwrap().content();
                 self.data_format
                     .serialize_with_indexes_raw(blob_content, &mut index_values);
                 if let Some(v) = index_values.get(index).unwrap() {
-                    index.create_entry(&repo, oid, v);
+                    index.create_entry(repo, oid, v);
                 }
                 TreeWalkResult::Ok
             })
@@ -478,8 +477,8 @@ impl Collection {
         indexes
     }
 
-    fn index_field_map<'a>(repo: &'a MutexGuard<Repository>) -> HashMap<String, index::Index> {
-        let index_tree = Self::current_commit(&repo, "main").unwrap().tree().unwrap();
+    fn index_field_map(repo: &MutexGuard<Repository>) -> HashMap<String, index::Index> {
+        let index_tree = Self::current_commit(repo, "main").unwrap().tree().unwrap();
         let mut indexes = HashMap::new();
         for index in index_tree.iter() {
             if index.name().unwrap().ends_with(".index") {
@@ -490,7 +489,7 @@ impl Collection {
         indexes
     }
 
-    fn ensure_index_dir_exists<'a>(repo: &'a MutexGuard<Repository>) {
+    fn ensure_index_dir_exists(repo: &MutexGuard<Repository>) {
         std::fs::create_dir_all(repo.path().join(".index")).unwrap();
     }
 
@@ -548,7 +547,7 @@ impl Collection {
             let mut tree_builder = parent_tree
                 .get(format!("{hex_part:x}"))
                 .unwrap()
-                .map(|x| repo.treebuilder(Some(&x.to_object(&repo).unwrap().into_tree().unwrap())))
+                .map(|x| repo.treebuilder(Some(&x.to_object(repo).unwrap().into_tree().unwrap())))
                 .unwrap_or_else(|| repo.treebuilder(None))?;
             if part == 1 {
                 tree_builder.insert(key, blob, 0o100644)?;
@@ -566,7 +565,7 @@ impl Collection {
                 parent_tree.insert(format!("{hex_part:x}"), tree_id, 0o040000)?;
                 trees.push(parent_tree);
             } else {
-                return Ok(self_tree.write()?);
+                return self_tree.write();
             }
         }
     }
@@ -628,11 +627,11 @@ impl Collection {
         let hash = Oid::hash_object(ObjectType::Blob, key.as_bytes()).unwrap();
         let hash_bytes = hash.as_bytes();
         let mut path = String::new();
-        for x in 0..2 {
+        (0..2).for_each(|x| {
             let val = &hash_bytes[x];
             path.push_str(format!("{val:x}").as_ref());
             path.push('/');
-        }
+        });
         path.push_str(key);
         path
     }

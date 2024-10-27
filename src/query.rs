@@ -16,6 +16,7 @@ pub enum ResolutionStrategy {
     UseIndexes(Vec<Index>),
 }
 
+#[derive(Default)]
 pub struct QueryBuilder {
     query: Option<QueryGroup>,
 }
@@ -47,8 +48,8 @@ impl QueryGroup {
         );
         for group in &self.next_group {
             result = match group.1 {
-                Chain::And => result && group.0.resolve(&data_format, &data),
-                Chain::Or => result || group.0.resolve(&data_format, &data),
+                Chain::And => result && group.0.resolve(data_format, data),
+                Chain::Or => result || group.0.resolve(data_format, data),
             };
         }
         result
@@ -75,7 +76,7 @@ impl QueryGroup {
                 ResolutionStrategy::UseIndexes(mut ind) => indexes_used.append(&mut ind),
             }
         }
-        return ResolutionStrategy::UseIndexes(indexes_used);
+        ResolutionStrategy::UseIndexes(indexes_used)
     }
 
     fn resolve_with_indexes<'a, 'i, I>(
@@ -91,40 +92,30 @@ impl QueryGroup {
     {
         match index_iterator.next() {
             Some(index) => {
-                let git_index = index.git_index(&repo);
+                let git_index = index.git_index(repo);
                 let mut new_res = HashSet::new();
                 let mut cur = match self.field_query.comparator {
                     Ordering::Less => 0,
-                    Ordering::Equal => {
-                        match git_index.find_prefix(self.field_query.prefix_query()) {
-                            Ok(v) => v,
-                            Err(_) => 0,
-                        }
-                    }
+                    Ordering::Equal => git_index
+                        .find_prefix(self.field_query.prefix_query())
+                        .unwrap_or(0),
                     Ordering::Greater => match git_index.len() {
                         0 => 0,
                         _ => git_index.len() - 1,
                     },
                 };
-                loop {
-                    let entry = match git_index.get(cur) {
-                        Some(v) => v,
-                        None => break,
-                    };
+                while let Some(entry) = git_index.get(cur) {
                     let val = Field::from_index_entry(&entry);
                     debug!("found the following value in the index: {:?}", val);
-                    match val {
-                        Some(v) => {
-                            let cmp = self.field_query.value.partial_cmp(&v);
-                            if cmp == Some(self.field_query.comparator) {
-                                new_res.insert(entry.id);
-                            } else if cmp.is_some() {
-                                break;
-                            }
+                    if let Some(v) = val {
+                        let cmp = self.field_query.value.partial_cmp(&v);
+                        if cmp == Some(self.field_query.comparator) {
+                            new_res.insert(entry.id);
+                        } else if cmp.is_some() {
+                            break;
                         }
-                        None => {}
                     }
-                    if (cur <= 0 && self.field_query.comparator == Ordering::Greater)
+                    if (cur == 0 && self.field_query.comparator == Ordering::Greater)
                         || (cur >= git_index.len()
                             && self.field_query.comparator != Ordering::Greater)
                     {
@@ -165,7 +156,7 @@ impl QueryGroup {
                             if entry.kind() != Some(ObjectType::Blob) {
                                 return TreeWalkResult::Skip;
                             }
-                            let blob = entry.to_object(&repo).unwrap();
+                            let blob = entry.to_object(repo).unwrap();
                             let blob_content = blob.as_blob().unwrap().content();
                             if self.resolve(data_format, blob_content) {
                                 results.insert(entry.id());
@@ -177,7 +168,7 @@ impl QueryGroup {
                     // scan only matching elements
                     results.retain(|v| {
                         let entry = main_tree.get_id(*v).unwrap();
-                        let blob = entry.to_object(&repo).unwrap();
+                        let blob = entry.to_object(repo).unwrap();
                         let blob_content = blob.as_blob().unwrap().content();
                         self.resolve(data_format, blob_content)
                     });
@@ -266,7 +257,7 @@ impl QueryBuilder {
         self
     }
 
-    pub fn execute<'a>(&self, collection: &Collection) -> QueryResult {
+    pub fn execute(&self, collection: &Collection) -> QueryResult {
         let repo = collection.repository();
         let tree = Collection::current_commit(&repo, "main")
             .unwrap()
@@ -371,7 +362,7 @@ mod tests {
         let (db, _td) = create_db();
         db.set(
             "a",
-            ComplexDbStruct::new(String::from("value"), 22, 3.14),
+            ComplexDbStruct::new(String::from("value"), 22, 4.20),
             OperationTarget::Main,
         );
         let query_result = QueryBuilder::new()
@@ -416,17 +407,17 @@ mod tests {
             .execute(&db);
         db.set(
             "a",
-            ComplexDbStruct::new(String::from("value"), 200, 3.14),
+            ComplexDbStruct::new(String::from("value"), 200, 4.20),
             OperationTarget::Main,
         );
         db.set(
             "b",
-            ComplexDbStruct::new(String::from("value"), 22, 3.14),
+            ComplexDbStruct::new(String::from("value"), 22, 4.20),
             OperationTarget::Main,
         );
         db.set(
             "c",
-            ComplexDbStruct::new(String::from("value"), 0, 3.14),
+            ComplexDbStruct::new(String::from("value"), 0, 4.20),
             OperationTarget::Main,
         );
         assert_eq!(
