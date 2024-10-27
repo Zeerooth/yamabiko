@@ -1,7 +1,8 @@
 use git2::build::CheckoutBuilder;
 use git2::{
     BranchType, Commit, ErrorCode, FileFavor, Index, MergeOptions, ObjectType, Oid, PushOptions,
-    RebaseOptions, Repository, Signature, Time, Tree, TreeBuilder, TreeWalkResult,
+    RebaseOptions, Repository, RepositoryInitOptions, Signature, Time, Tree, TreeBuilder,
+    TreeWalkResult,
 };
 use parking_lot::{Mutex, MutexGuard};
 use rand::distributions::Alphanumeric;
@@ -26,6 +27,15 @@ pub mod serialization;
 pub enum OperationTarget<'a> {
     Main,
     Transaction(&'a str),
+}
+
+impl<'a> OperationTarget<'a> {
+    pub fn to_git_branch(&self) -> &str {
+        match self {
+            OperationTarget::Main => "main",
+            OperationTarget::Transaction(t) => t,
+        }
+    }
 }
 
 pub enum ConflictResolution {
@@ -58,7 +68,11 @@ impl<'c> Collection<'c> {
         path: &Path,
         data_format: serialization::DataFormat,
     ) -> Result<Self, error::CollectionInitError> {
-        let repo = Repository::init_bare(path).unwrap();
+        let repo = Repository::init_opts(
+            path,
+            RepositoryInitOptions::new().bare(true).initial_head("main"),
+        )
+        .unwrap();
         {
             let mut cfg = repo.config()?;
             cfg.set_str("user.name", "yamabiko")?;
@@ -518,7 +532,7 @@ impl<'c> Collection<'c> {
         }
     }
 
-    pub fn revert_to_commit(&self, commit: Oid) -> Result<(), error::RevertError> {
+    pub fn revert_main_to_commit(&self, commit: Oid) -> Result<(), error::RevertError> {
         let repo = self.repository.lock();
         let target_commit = repo
             .find_commit(commit)
@@ -527,22 +541,34 @@ impl<'c> Collection<'c> {
         Ok(())
     }
 
-    pub fn revert_n_commits(&self, n: usize) -> Result<(), error::RevertError> {
+    pub fn revert_n_commits(
+        &self,
+        n: usize,
+        target: OperationTarget,
+    ) -> Result<(), error::RevertError> {
+        debug!("Reverting {} commits", n);
         if n == 0 {
             return Ok(());
         }
         let repo = self.repository.lock();
-        let head = repo.head()?.target().unwrap();
-        let mut target_commit = repo
-            .find_commit(head)
-            .map_err(|_| error::RevertError::TargetCommitNotFound(head))?;
+        let mut target_commit =
+            Self::current_commit(&repo, target.to_git_branch()).map_err(|e| match e.code() {
+                ErrorCode::NotFound => error::RevertError::InvalidOperationTarget,
+                _ => e.into(),
+            })?;
         for _ in 0..n {
-            if target_commit.parent_count() > 1 {
-                return Err(error::RevertError::BranchingHistory(head));
-            } else if target_commit.parent_count() == 0 {
+            let parent_count = target_commit.parent_count();
+            if parent_count > 1 {
+                return Err(error::RevertError::BranchingHistory(target_commit.id()));
+            } else if parent_count == 0 {
+                debug!("No more parents to check");
                 break;
             }
             target_commit = target_commit.parent(0)?;
+            debug!(
+                "Current commit to revert to: {:?}",
+                target_commit.as_object()
+            );
         }
         repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)?;
         Ok(())
@@ -719,7 +745,7 @@ mod tests {
                 str_val: String::from("changed b value")
             }
         );
-        db.revert_n_commits(1).unwrap();
+        db.revert_n_commits(1, OperationTarget::Main).unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("b", OperationTarget::Main)
                 .unwrap()
@@ -763,7 +789,7 @@ mod tests {
             .into_reference();
         let head_commit = reference.peel_to_commit().unwrap();
         let first_commit = head_commit.parent(0).unwrap().parent(0).unwrap().clone();
-        db.revert_to_commit(first_commit.id()).unwrap();
+        db.revert_main_to_commit(first_commit.id()).unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("a", OperationTarget::Main)
                 .unwrap()

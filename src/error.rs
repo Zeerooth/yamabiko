@@ -21,6 +21,7 @@ pub enum RevertError {
     BranchingHistory(Oid),
     /// There is no such commit with specified Oid.
     TargetCommitNotFound(Oid),
+    InvalidOperationTarget,
     /// Unknown error caused by git.
     InternalGitError(GitErr),
 }

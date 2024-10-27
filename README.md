@@ -12,6 +12,7 @@ Embedded database based on git
 - [x] Optional long-living transactions (under separate branches)
 - [x] Manage indexes for faster queries
 - [x] Replicate data to remote repositories (backup)
+- [x] Keep the entire history of changes and easily revert back
 
 ## Examples & Tests
 
