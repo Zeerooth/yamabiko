@@ -34,7 +34,8 @@ async fn main() {
     // but the exact contents of each record are yours to determine and handle
     // You can mix different structs for de/serialization,
     // but it's a good idea to have a separate collection for each type
-    let mut db = Collection::load_or_create(Path::new("/tmp/repo"), DataFormat::Json).unwrap();
+    let repo_path = Path::new("/tmp/repo");
+    let mut db = Collection::load_or_create(repo_path, DataFormat::Json).unwrap();
 
     // Setting credentials is only necessary if you plan to replicate data to a remote repo as a backup
     let credentials = RemoteCredentials {
@@ -44,16 +45,20 @@ async fn main() {
         passphrase: None,
     };
 
-    // If you plan to have frequent data updates then ReplicationMethod::All is probably a bad idea
-    // Syncing with remote repos is slow
-    // And frequent requests are going to get you rate limited if you use an external service
-    // Consider using ReplicationMethod::Random(0.05) - only ~5% of commits are going to result in a sync 
-    db.add_replica(
+    // In this example we spawn the replicator in the same thread, so it's going to be blocking.
+    // The proper way to replicate data to remotes is to have a replicator per remote per collection
+    // running inside a thread or a tokio task. However, this is out of scope for this simple demo. 
+    let repl = Replicator::initialize(
+        repo_path,
         "gh_backup",
         "git@github.com:torvalds/myepicrepo.git",
-        yamabiko::replica::ReplicationMethod::All,
+        // If you plan to have frequent data updates then ReplicationMethod::All is probably a bad idea
+        // Syncing with remote repos is slow
+        // And frequent requests are going to get you rate limited if you use an external service
+        // Consider using ReplicationMethod::Random(0.05) - only ~5% of commits are going to result in a sync
+        ReplicationMethod::All,
         Some(credentials),
-    );
+    ).unwrap(); 
 
     println!("We have {} replicas loaded!", db.replicas().len());
  
@@ -74,14 +79,10 @@ async fn main() {
     // "set" will save the data as a blob and make a new commit
     // You can also use "set_batch" for updating many records at once
     // And long-living transactions to prevent the data from being commited to the main branch automatically
-    let res = db.set(key, to_save, yamabiko::OperationTarget::Main);
+    db.set(key, to_save, yamabiko::OperationTarget::Main).unwrap();
     
-    for r in res {
-        // This is entirely optional.
-        // If you don't await then the sync will happen in the background and you can continue execution.
-        let await_res = r.1.await;
-        println!("{:?}", await_res);
-    }
+    // Only necessary if you make use of replication
+    repl.replicate().unwrap();
 
     // QueryBuilder is not very powerful yet,
     // but it allows for making simple queries on data saved in the collection
