@@ -2,12 +2,12 @@ use git2::Error as GitErr;
 use git2::Oid;
 
 #[derive(Debug, PartialEq)]
-pub enum CollectionInitError {
+pub enum InitializationError {
     /// Unknown error caused by git.
     InternalGitError(GitErr),
 }
 
-impl From<GitErr> for CollectionInitError {
+impl From<GitErr> for InitializationError {
     fn from(err: GitErr) -> Self {
         Self::InternalGitError(err)
     }

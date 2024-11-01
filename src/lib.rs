@@ -1,19 +1,14 @@
 use git2::build::CheckoutBuilder;
 use git2::{
-    BranchType, Commit, Cred, ErrorCode, FileFavor, Index, MergeOptions, ObjectType, Oid,
-    PushOptions, RebaseOptions, RemoteCallbacks, Repository, RepositoryInitOptions, Signature,
-    Time, Tree, TreeBuilder, TreeWalkResult,
+    BranchType, Commit, ErrorCode, FileFavor, Index, MergeOptions, ObjectType, Oid, RebaseOptions,
+    Repository, RepositoryInitOptions, Signature, Time, Tree, TreeBuilder, TreeWalkResult,
 };
-use parking_lot::{Mutex, MutexGuard};
 use rand::distributions::Alphanumeric;
 use rand::prelude::*;
-use replica::RemoteCredentials;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::str;
-use std::sync::Arc;
 use std::{collections::HashMap, path::Path};
-use tokio::runtime::{Handle, Runtime};
 
 use crate::field::Field;
 
@@ -45,50 +40,12 @@ pub enum ConflictResolution {
     Abort,
 }
 
-pub struct Collection {
-    repository: Arc<Mutex<Repository>>,
-    replicas: Vec<replica::Replica>,
-    handle: Handle,
-    data_format: serialization::DataFormat,
-}
-
-impl Collection {
-    pub fn load_existing(
-        path: &Path,
-        data_format: serialization::DataFormat,
-    ) -> Result<Self, error::CollectionInitError> {
-        Ok(Self {
-            repository: Arc::new(Mutex::new(Repository::open_bare(path)?)),
-            replicas: Vec::new(),
-            handle: Collection::get_runtime_handle().0,
-            data_format,
-        })
-    }
-
-    pub fn load_or_create(
-        path: &Path,
-        data_format: serialization::DataFormat,
-    ) -> Result<Self, error::CollectionInitError> {
-        match Self::load_existing(path, data_format) {
-            Ok(repo) => Ok(repo),
-            Err(initerr) => match initerr {
-                error::CollectionInitError::InternalGitError(error) => match error.code() {
-                    ErrorCode::NotFound => Self::create(path, data_format),
-                    _ => Err(error::CollectionInitError::InternalGitError(error)),
-                },
-            },
-        }
-    }
-
-    pub fn create(
-        path: &Path,
-        data_format: serialization::DataFormat,
-    ) -> Result<Self, error::CollectionInitError> {
+trait RepositoryAbstraction {
+    fn init_new_repo(path: &Path) -> Result<Repository, git2::Error> {
         let repo = Repository::init_opts(
             path,
             RepositoryInitOptions::new().bare(true).initial_head("main"),
-        )
-        .unwrap();
+        )?;
         {
             let mut cfg = repo.config()?;
             cfg.set_str("user.name", "yamabiko")?;
@@ -102,41 +59,45 @@ impl Collection {
             let head_commit = repo.find_commit(head)?;
             repo.branch("main", &head_commit, true)?;
         }
+        Ok(repo)
+    }
+
+    fn load_existing_repo(path: &Path) -> Result<Repository, git2::Error> {
+        Repository::open_bare(path)
+    }
+
+    fn load_or_create_repo(path: &Path) -> Result<Repository, git2::Error> {
+        match Self::load_existing_repo(path) {
+            Ok(repo) => Ok(repo),
+            Err(error) => match error.code() {
+                ErrorCode::NotFound => Self::init_new_repo(path),
+                _ => Err(error),
+            },
+        }
+    }
+}
+
+pub struct Collection {
+    repository: Repository,
+    data_format: serialization::DataFormat,
+}
+
+impl RepositoryAbstraction for Collection {}
+
+impl Collection {
+    pub fn initialize(
+        path: &Path,
+        data_format: serialization::DataFormat,
+    ) -> Result<Self, error::InitializationError> {
+        let repo = Self::load_or_create_repo(path)?;
         Ok(Self {
-            repository: Arc::new(Mutex::new(repo)),
-            replicas: Vec::new(),
-            handle: Collection::get_runtime_handle().0,
+            repository: repo,
             data_format,
         })
     }
 
-    pub fn repository(&self) -> MutexGuard<Repository> {
-        self.repository.lock()
-    }
-
-    pub fn add_replica(
-        &mut self,
-        name: &str,
-        url: &str,
-        replication_method: replica::ReplicationMethod,
-        credentials: Option<RemoteCredentials>,
-    ) {
-        if self.replicas.iter().any(|x| x.remote.as_str() == name) {
-            return;
-        }
-        let repo = self.repository.lock();
-        let remote = repo
-            .find_remote(name.as_ref())
-            .unwrap_or_else(|_| repo.remote(name, url).unwrap());
-        self.replicas.push(replica::Replica {
-            remote: remote.name().unwrap().to_string(),
-            replication_method,
-            credentials,
-        });
-    }
-
-    pub fn replicas(&self) -> &Vec<replica::Replica> {
-        &self.replicas
+    pub fn repository(&self) -> &Repository {
+        &self.repository
     }
 
     pub fn get<D>(
@@ -152,8 +113,8 @@ impl Collection {
             OperationTarget::Main => "main",
             OperationTarget::Transaction(t) => t,
         };
-        let repo = self.repository.lock();
-        let tree_path = Collection::current_commit(&repo, branch)
+        let repo = &self.repository;
+        let tree_path = Collection::current_commit(repo, branch)
             .map_err(|e| match e.code() {
                 ErrorCode::NotFound => error::GetObjectError::InvalidOperationTarget,
                 _ => e.into(),
@@ -162,7 +123,7 @@ impl Collection {
             .get_path(Path::new(&path))
             .ok();
         if let Some(tree_entry) = tree_path {
-            let obj = tree_entry.to_object(&repo)?;
+            let obj = tree_entry.to_object(repo)?;
             let blob = obj
                 .as_blob()
                 .ok_or_else(|| error::GetObjectError::CorruptedObject)?;
@@ -182,7 +143,7 @@ impl Collection {
         D: DeserializeOwned,
     {
         debug!("Looking up oid {}", oid);
-        let repo = self.repository.lock();
+        let repo = &self.repository;
         let blob = repo.find_blob(oid);
         if let Ok(blob) = blob {
             let blob_content = blob.content().to_owned();
@@ -194,25 +155,21 @@ impl Collection {
         Ok(None)
     }
 
-    pub fn set_batch<S, I, T>(
-        &self,
-        items: I,
-        target: OperationTarget,
-    ) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>>
+    pub fn set_batch<S, I, T>(&self, items: I, target: OperationTarget) -> Result<(), git2::Error>
     where
         S: Serialize,
         I: IntoIterator<Item = (T, S)>,
         T: AsRef<str>,
     {
         let indexes = self.index_list();
-        let repo = self.repository.lock();
+        let repo = &self.repository;
         let branch = match target {
             OperationTarget::Main => "main",
             OperationTarget::Transaction(t) => t,
         };
-        let commit = Collection::current_commit(&repo, branch).unwrap();
+        let commit = Collection::current_commit(repo, branch).unwrap();
         {
-            let mut root_tree = commit.tree().unwrap();
+            let mut root_tree = commit.tree()?;
             let mut counter = 0;
             for (key, value) in items {
                 counter += 1;
@@ -221,18 +178,15 @@ impl Collection {
                 for index in indexes.iter() {
                     index_values.insert(index, None);
                 }
-                let blob = repo
-                    .blob(
-                        self.data_format
-                            .serialize_with_indexes(value, &mut index_values)
-                            .as_bytes(),
-                    )
-                    .unwrap();
-                let hash = Oid::hash_object(ObjectType::Blob, key.as_ref().as_bytes()).unwrap();
+                let blob = repo.blob(
+                    self.data_format
+                        .serialize_with_indexes(value, &mut index_values)
+                        .as_bytes(),
+                )?;
+                let hash = Oid::hash_object(ObjectType::Blob, key.as_ref().as_bytes())?;
                 let trees =
-                    Collection::make_tree(&repo, hash.as_bytes(), &root_tree, key.as_ref(), blob)
-                        .unwrap();
-                root_tree = repo.find_tree(trees).unwrap();
+                    Collection::make_tree(&repo, hash.as_bytes(), &root_tree, key.as_ref(), blob)?;
+                root_tree = repo.find_tree(trees)?;
                 for (index, value) in index_values {
                     if let Some(val) = value {
                         index.create_entry(&repo, hash, &val);
@@ -255,17 +209,10 @@ impl Collection {
                 .set_target(commit_obj, &commit_msg)
                 .unwrap();
         }
-        drop(commit);
-        drop(repo);
-        self.replicate()
+        Ok(())
     }
 
-    pub fn set<S>(
-        &self,
-        key: &str,
-        value: S,
-        target: OperationTarget,
-    ) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>>
+    pub fn set<S>(&self, key: &str, value: S, target: OperationTarget) -> Result<(), git2::Error>
     where
         S: Serialize,
     {
@@ -273,7 +220,7 @@ impl Collection {
     }
 
     pub fn new_transaction(&self, name: Option<&str>) -> Result<String, git2::Error> {
-        let repo = self.repository.lock();
+        let repo = &self.repository;
         let head = repo.head()?.target().unwrap();
         let head_commit = repo.find_commit(head)?;
         let transaction_name = name.map(|n| n.to_string()).unwrap_or_else(|| {
@@ -295,12 +242,12 @@ impl Collection {
         name: &str,
         conflict_resolution: ConflictResolution,
     ) -> Result<(), error::TransactionError> {
-        let repo = self.repository.lock();
+        let repo = &self.repository;
         let main_branch = repo
-            .find_annotated_commit(Collection::current_commit(&repo, "main")?.id())
+            .find_annotated_commit(Collection::current_commit(repo, "main")?.id())
             .unwrap();
         let transaction =
-            Collection::current_commit(&repo, name).map_err(|err| match err.code() {
+            Collection::current_commit(repo, name).map_err(|err| match err.code() {
                 ErrorCode::NotFound => error::TransactionError::TransactionNotFound,
                 _ => err.into(),
             })?;
@@ -376,15 +323,12 @@ impl Collection {
         field: &str,
         kind: index::IndexType,
         target: OperationTarget,
-    ) -> (
-        index::Index,
-        HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>>,
-    ) {
+    ) -> index::Index {
         let branch = match target {
             OperationTarget::Main => "main",
             OperationTarget::Transaction(t) => t,
         };
-        let repo = self.repository.lock();
+        let repo = &self.repository;
         let commit = Collection::current_commit(&repo, branch).unwrap();
         let index_tree = commit.tree().unwrap();
         let index_name = format!("{}#{}.index", &field, kind);
@@ -393,10 +337,10 @@ impl Collection {
         if existing_index.is_none() {
             {
                 let mut tb = repo.treebuilder(Some(&index_tree)).unwrap();
-                Self::ensure_index_dir_exists(&repo);
+                Self::ensure_index_dir_exists(repo);
                 let mut index =
                     Index::open(Path::new(&repo.path().join(".index").join(&index_name))).unwrap();
-                let obj = index.write_tree_to(&repo).unwrap();
+                let obj = index.write_tree_to(repo).unwrap();
                 tb.insert(&index_name, obj, 0o040000).unwrap();
                 let new_root = tb.write().unwrap();
                 let root_tree = repo.find_tree(new_root).unwrap();
@@ -420,11 +364,11 @@ impl Collection {
                     .unwrap();
             }
         }
-        self.populate_index(&repo, &index_obj);
-        (index_obj, self.replicate())
+        self.populate_index(repo, &index_obj);
+        index_obj
     }
 
-    fn populate_index(&self, repo: &MutexGuard<Repository>, index: &index::Index) {
+    fn populate_index(&self, repo: &Repository, index: &index::Index) {
         let current_commit = Collection::current_commit(repo, "main").unwrap();
         current_commit
             .tree()
@@ -451,8 +395,8 @@ impl Collection {
     }
 
     fn index_list(&self) -> Vec<index::Index> {
-        let repo = self.repository.lock();
-        let index_tree = Self::current_commit(&repo, "main").unwrap().tree().unwrap();
+        let repo = &self.repository;
+        let index_tree = Self::current_commit(repo, "main").unwrap().tree().unwrap();
         let mut indexes = Vec::new();
         for index in index_tree.iter() {
             if index.name().unwrap().ends_with(".index") {
@@ -462,7 +406,7 @@ impl Collection {
         indexes
     }
 
-    fn index_field_map(repo: &MutexGuard<Repository>) -> HashMap<String, index::Index> {
+    fn index_field_map(repo: &Repository) -> HashMap<String, index::Index> {
         let index_tree = Self::current_commit(repo, "main").unwrap().tree().unwrap();
         let mut indexes = HashMap::new();
         for index in index_tree.iter() {
@@ -474,52 +418,12 @@ impl Collection {
         indexes
     }
 
-    fn ensure_index_dir_exists(repo: &MutexGuard<Repository>) {
+    fn ensure_index_dir_exists(repo: &Repository) {
         std::fs::create_dir_all(repo.path().join(".index")).unwrap();
     }
 
-    fn replicate(&self) -> HashMap<String, tokio::task::JoinHandle<Result<(), git2::Error>>> {
-        let mut remote_push_results = HashMap::new();
-        let rand_res: f64 = rand::thread_rng().gen();
-        for replica in &self.replicas {
-            let replicate = match replica.replication_method {
-                replica::ReplicationMethod::All => true,
-                replica::ReplicationMethod::Random(chance) => rand_res < chance,
-                _ => true,
-            };
-            if !replicate {
-                continue;
-            }
-            let data = Arc::clone(&self.repository);
-            let replica_remote = replica.remote.clone();
-            let credentials = replica.credentials.clone();
-            let task = self.handle.spawn(async move {
-                let repo = data.lock();
-                let mut remote = repo.find_remote(&replica_remote)?;
-                let mut callbacks = RemoteCallbacks::new();
-                if let Some(ref cred) = credentials {
-                    callbacks.credentials(|_, username_from_url, _| {
-                        Cred::ssh_key(
-                            cred.username
-                                .as_deref()
-                                .unwrap_or(username_from_url.unwrap_or("git")),
-                            cred.publickey.as_deref(),
-                            cred.privatekey.as_path(),
-                            cred.passphrase.as_deref(),
-                        )
-                    });
-                }
-                let mut push_options = PushOptions::new();
-                push_options.remote_callbacks(callbacks);
-                remote.push(&["refs/heads/main"], Some(&mut push_options))
-            });
-            remote_push_results.insert(replica.remote.clone(), task);
-        }
-        remote_push_results
-    }
-
     fn make_tree<'a>(
-        repo: &'a MutexGuard<Repository>,
+        repo: &'a Repository,
         oid: &[u8],
         root_tree: &'a Tree,
         key: &str,
@@ -580,7 +484,7 @@ impl Collection {
     }
 
     pub fn revert_main_to_commit(&self, commit: Oid) -> Result<(), error::RevertError> {
-        let repo = self.repository.lock();
+        let repo = &self.repository;
         let target_commit = repo
             .find_commit(commit)
             .map_err(|_| error::RevertError::TargetCommitNotFound(commit))?;
@@ -597,9 +501,9 @@ impl Collection {
         if n == 0 {
             return Ok(());
         }
-        let repo = self.repository.lock();
+        let repo = &self.repository;
         let mut target_commit =
-            Self::current_commit(&repo, target.to_git_branch()).map_err(|e| match e.code() {
+            Self::current_commit(repo, target.to_git_branch()).map_err(|e| match e.code() {
                 ErrorCode::NotFound => error::RevertError::InvalidOperationTarget,
                 _ => e.into(),
             })?;
@@ -621,10 +525,7 @@ impl Collection {
         Ok(())
     }
 
-    fn current_commit<'a>(
-        repo: &'a MutexGuard<Repository>,
-        branch: &str,
-    ) -> Result<Commit<'a>, git2::Error> {
+    fn current_commit<'a>(repo: &'a Repository, branch: &str) -> Result<Commit<'a>, git2::Error> {
         let reference = repo
             .find_branch(branch.as_ref(), BranchType::Local)?
             .into_reference();
@@ -664,16 +565,6 @@ impl Collection {
         Oid::from_str(&path[path.len() - 22..].replace("/", "")).unwrap()
     }
 
-    fn get_runtime_handle() -> (Handle, Option<Runtime>) {
-        match Handle::try_current() {
-            Ok(h) => (h, None),
-            Err(_) => {
-                let rt = Runtime::new().unwrap();
-                (rt.handle().clone(), Some(rt))
-            }
-        }
-    }
-
     fn signature<'a>() -> Signature<'a> {
         let current_time = &Time::new(chrono::Utc::now().timestamp(), 0);
         Signature::new("yamabiko", "yamabiko", current_time).unwrap()
@@ -693,7 +584,6 @@ mod tests {
         error,
         index::{Index, IndexType},
         query::{q, QueryBuilder},
-        replica::ReplicationMethod,
         OperationTarget,
     };
 
@@ -708,7 +598,8 @@ mod tests {
                 str_val: String::from("value"),
             },
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("key", OperationTarget::Main)
                 .unwrap()
@@ -742,7 +633,7 @@ mod tests {
             },
         );
         let mut hm2 = hm.clone();
-        db.set_batch(hm, OperationTarget::Main);
+        db.set_batch(hm, OperationTarget::Main).unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("pref/a", OperationTarget::Main)
                 .unwrap()
@@ -765,7 +656,7 @@ mod tests {
             "pref/a",
             SampleDbStruct::new(String::from("changed a value")),
         );
-        db.set_batch(hm2, OperationTarget::Main);
+        db.set_batch(hm2, OperationTarget::Main).unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("pref/a", OperationTarget::Main)
                 .unwrap()
@@ -791,17 +682,20 @@ mod tests {
             "a",
             SampleDbStruct::new(String::from("initial a value")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "b",
             SampleDbStruct::new(String::from("initial b value")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "b",
             SampleDbStruct::new(String::from("changed b value")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("b", OperationTarget::Main)
                 .unwrap()
@@ -828,17 +722,20 @@ mod tests {
             "a",
             SampleDbStruct::new(String::from("initial a value")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "a",
             SampleDbStruct::new(String::from("change #1")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "a",
             SampleDbStruct::new(String::from("change #2")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("a", OperationTarget::Main)
                 .unwrap()
@@ -866,105 +763,21 @@ mod tests {
     }
 
     #[test]
-    fn test_replica_same_name() {
-        let (mut db, _td) = create_db();
-        let (_, _td_backup) = create_db();
-        db.add_replica(
-            "test",
-            _td_backup.path().to_str().unwrap(),
-            ReplicationMethod::All,
-            None,
-        );
-        db.add_replica(
-            "test",
-            _td_backup.path().to_str().unwrap(),
-            ReplicationMethod::All,
-            None,
-        );
-        assert_eq!(db.replicas.len(), 1);
-    }
-
-    #[test]
-    fn test_replica_already_in_git() {
-        let (mut db, _td) = create_db();
-        let (_, _td_backup) = create_db();
-        db.repository
-            .lock()
-            .remote("test", _td_backup.path().to_str().unwrap())
-            .unwrap();
-        db.add_replica(
-            "test",
-            _td_backup.path().to_str().unwrap(),
-            ReplicationMethod::All,
-            None,
-        );
-        assert_eq!(db.replicas.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_replica_sync() {
-        let (mut db, _td) = create_db();
-        let (db_backup, _td_backup) = create_db();
-        db.add_replica(
-            "test",
-            _td_backup.path().to_str().unwrap(),
-            ReplicationMethod::All,
-            None,
-        );
-        assert_eq!(db.replicas.len(), 1);
-        let result = db.set(
-            "a",
-            SampleDbStruct::new(String::from("a value")),
-            OperationTarget::Main,
-        );
-        for (_, value) in result {
-            value.await.unwrap().unwrap();
-        }
-        assert_eq!(
-            db_backup
-                .get::<SampleDbStruct>("a", OperationTarget::Main)
-                .unwrap()
-                .unwrap(),
-            SampleDbStruct {
-                str_val: String::from("a value")
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn test_replica_non_existing_repo() {
-        let (mut db, _td) = create_db();
-        db.add_replica(
-            "test",
-            "https://800.800.800.800/git.git",
-            ReplicationMethod::All,
-            None,
-        );
-        assert_eq!(db.replicas.len(), 1);
-        let result = db.set(
-            "a",
-            SampleDbStruct::new(String::from("a value")),
-            OperationTarget::Main,
-        );
-        for (_, value) in result {
-            assert!(value.await.unwrap().is_err());
-        }
-    }
-
-    #[test]
     fn test_simple_transaction() {
         let (db, _td) = create_db();
         db.set(
             "a",
             SampleDbStruct::new(String::from("a val")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         let t = db.new_transaction(None).unwrap();
         db.set(
             "b",
             SampleDbStruct::new(String::from("b val")),
             OperationTarget::Transaction(&t),
-        );
+        )
+        .unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("b", OperationTarget::Main)
                 .unwrap(),
@@ -997,18 +810,21 @@ mod tests {
             "a",
             SampleDbStruct::new(String::from("INIT\nline2")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         let t = db.new_transaction(None).unwrap();
         db.set(
             "a",
             SampleDbStruct::new(String::from("TRAN\nline2")),
             OperationTarget::Transaction(&t),
-        );
+        )
+        .unwrap();
         db.set(
             "a",
             SampleDbStruct::new(String::from("MAIN\nline2")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("a", OperationTarget::Main)
                 .unwrap()
@@ -1044,18 +860,21 @@ mod tests {
             "a",
             SampleDbStruct::new(String::from("INIT\nline2")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         let t = db.new_transaction(None).unwrap();
         db.set(
             "a",
             SampleDbStruct::new(String::from("TRAN\nline2")),
             OperationTarget::Transaction(&t),
-        );
+        )
+        .unwrap();
         db.set(
             "a",
             SampleDbStruct::new(String::from("MAIN\nline2")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("a", OperationTarget::Main)
                 .unwrap()
@@ -1091,18 +910,21 @@ mod tests {
             "a",
             SampleDbStruct::new(String::from("INIT\nline2")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         let t = db.new_transaction(None).unwrap();
         db.set(
             "a",
             SampleDbStruct::new(String::from("TRAN\nline2")),
             OperationTarget::Transaction(&t),
-        );
+        )
+        .unwrap();
         db.set(
             "a",
             SampleDbStruct::new(String::from("MAIN\nline2")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("a", OperationTarget::Main)
                 .unwrap()
@@ -1143,7 +965,8 @@ mod tests {
             "a",
             SampleDbStruct::new(String::from("test value")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         let index_list = db.index_list();
         assert_eq!(index_list.len(), 1);
         assert_eq!(
@@ -1160,20 +983,22 @@ mod tests {
             "a",
             SampleDbStruct::new(String::from("1val")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "b",
             SampleDbStruct::new(String::from("1val")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "c",
             SampleDbStruct::new(String::from("2val")),
             OperationTarget::Main,
-        );
-
+        )
+        .unwrap();
         let index_values: Vec<git2::IndexEntry> = db.index_list()[0]
-            .git_index(&db.repository.lock())
+            .git_index(&db.repository)
             .iter()
             .collect();
         assert_eq!(index_values.len(), 3);
@@ -1190,25 +1015,30 @@ mod tests {
             "b",
             InterigentDbStruct { num_val: 20 },
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "c",
             InterigentDbStruct { num_val: 2 },
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "d",
             InterigentDbStruct { num_val: 3 },
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "e",
             FloatyDbStruct { num_val: -11.0 },
             OperationTarget::Main,
-        );
-        db.set("a", FloatyDbStruct { num_val: 2.11 }, OperationTarget::Main);
+        )
+        .unwrap();
+        db.set("a", FloatyDbStruct { num_val: 2.11 }, OperationTarget::Main)
+            .unwrap();
         let index_values: Vec<git2::IndexEntry> = db.index_list()[0]
-            .git_index(&db.repository.lock())
+            .git_index(&db.repository)
             .iter()
             .collect();
         assert_eq!(index_values.len(), 5);
@@ -1242,9 +1072,10 @@ mod tests {
             "a",
             SampleDbStruct::new(String::from("test")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         let index_values: Vec<git2::IndexEntry> = db.index_list()[0]
-            .git_index(&db.repository.lock())
+            .git_index(&db.repository)
             .iter()
             .collect();
         assert_eq!(index_values.len(), 0);
@@ -1257,10 +1088,11 @@ mod tests {
             "a",
             SampleDbStruct::new(String::from("test")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
         let index_values: Vec<git2::IndexEntry> = db.index_list()[0]
-            .git_index(&db.repository.lock())
+            .git_index(&db.repository)
             .iter()
             .collect();
         assert_eq!(index_values.len(), 1);
@@ -1275,9 +1107,11 @@ mod tests {
             "a",
             SampleDbStruct::new(String::from("test")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         assert_eq!(query.execute(&db).count, 1);
-        db.set("a", FloatyDbStruct { num_val: 69.0 }, OperationTarget::Main);
+        db.set("a", FloatyDbStruct { num_val: 69.0 }, OperationTarget::Main)
+            .unwrap();
         assert_eq!(query.execute(&db).count, 0);
     }
 
@@ -1290,13 +1124,15 @@ mod tests {
             "a",
             SampleDbStruct::new(String::from("test")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         assert_eq!(query.execute(&db).count, 1);
         db.set(
             "a",
             SampleDbStruct::new(String::from("test2")),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         assert_eq!(query.execute(&db).count, 1);
     }
 }

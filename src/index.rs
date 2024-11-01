@@ -1,7 +1,6 @@
 use std::{fmt::Display, path::Path};
 
 use git2::{Index as GitIndex, IndexEntry, IndexTime, Oid, Repository};
-use parking_lot::MutexGuard;
 
 use crate::debug;
 use crate::field::Field;
@@ -78,7 +77,7 @@ impl Index {
         }
     }
 
-    pub fn create_entry(&self, repo: &MutexGuard<Repository>, oid: Oid, field: &Field) {
+    pub fn create_entry(&self, repo: &Repository, oid: Oid, field: &Field) {
         let value = field.to_index_value();
         let mut git_index = self.git_index(repo);
         let last_entry = git_index.find_prefix(&value);
@@ -114,7 +113,7 @@ impl Index {
         git_index.write().unwrap();
     }
 
-    pub fn delete_entry(&self, repo: &MutexGuard<Repository>, oid: Oid) -> bool {
+    pub fn delete_entry(&self, repo: &Repository, oid: Oid) -> bool {
         // this method is going to be terribly slow on large indexes but it works for now
         let mut git_index = self.git_index(repo);
         debug!("removing an entry with oid: {}", oid);
@@ -129,7 +128,7 @@ impl Index {
         false
     }
 
-    pub fn git_index(&self, repo: &MutexGuard<Repository>) -> GitIndex {
+    pub fn git_index(&self, repo: &Repository) -> GitIndex {
         GitIndex::open(
             Path::new(repo.path())
                 .join(".index")

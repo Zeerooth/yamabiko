@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{BitAnd, BitOr};
 
 use git2::{ObjectType, Oid, Repository, TreeWalkResult};
-use parking_lot::MutexGuard;
 
 use crate::field::Field;
 use crate::index::Index;
@@ -82,7 +81,7 @@ impl QueryGroup {
     fn resolve_with_indexes<'a, 'i, I>(
         &self,
         index_iterator: &mut I,
-        repo: &'a MutexGuard<Repository>,
+        repo: &Repository,
         results: &mut HashSet<Oid>,
         chain: Chain,
         data_format: &DataFormat,
@@ -263,11 +262,11 @@ impl QueryBuilder {
 
     pub fn execute(&self, collection: &Collection) -> QueryResult {
         let repo = collection.repository();
-        let tree = Collection::current_commit(&repo, "main")
+        let tree = Collection::current_commit(repo, "main")
             .unwrap()
             .tree()
             .unwrap();
-        let all_indexes = Collection::index_field_map(&repo);
+        let all_indexes = Collection::index_field_map(repo);
         let query = self.query.as_ref().unwrap();
         let resolution_strategy = query.resolution_strategy(&all_indexes);
         debug!(
@@ -283,7 +282,7 @@ impl QueryBuilder {
         debug!("executing a query: {:?}", query);
         query.resolve_with_indexes(
             &mut indexes_to_use.iter(),
-            &repo,
+            repo,
             &mut keys,
             Chain::Or,
             &collection.data_format,
@@ -319,14 +318,16 @@ mod tests {
                 str_val: String::from("value"),
             },
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "b",
             SampleDbStruct {
                 str_val: String::from("other value"),
             },
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         let query_result = QueryBuilder::new()
             .query(q("str_val", Equal, "value") | q("non_existing_val", Equal, "a"))
             .execute(&db);
@@ -343,18 +344,20 @@ mod tests {
             "a",
             ComplexDbStruct::new(String::from("value"), 22, 1.0),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "b",
             ComplexDbStruct::new(String::from("value"), 4, 1.0),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "c",
             ComplexDbStruct::new(String::from("different"), 22, 1.0),
             OperationTarget::Main,
-        );
-
+        )
+        .unwrap();
         let query_result = QueryBuilder::new()
             .query(
                 q("str_val", Equal, "different")
@@ -371,7 +374,8 @@ mod tests {
             "a",
             ComplexDbStruct::new(String::from("value"), 22, 4.20),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         let query_result = QueryBuilder::new()
             .query(q("float_val", Less, 22.1))
             .execute(&db);
@@ -416,17 +420,20 @@ mod tests {
             "a",
             ComplexDbStruct::new(String::from("value"), 200, 4.20),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "b",
             ComplexDbStruct::new(String::from("value"), 22, 4.20),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         db.set(
             "c",
             ComplexDbStruct::new(String::from("value"), 0, 4.20),
             OperationTarget::Main,
-        );
+        )
+        .unwrap();
         assert_eq!(
             result.resolution_strategy,
             ResolutionStrategy::UseIndexes(vec![Index::new(
@@ -449,7 +456,7 @@ mod tests {
                 ComplexDbStruct::new(String::from("test value"), *x, *x as f64),
             )
         });
-        db.set_batch(hm2, OperationTarget::Main);
+        db.set_batch(hm2, OperationTarget::Main).unwrap();
         let query_result = QueryBuilder::new()
             .query(
                 q("usize_val", Less, 100)
