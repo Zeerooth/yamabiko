@@ -1,3 +1,4 @@
+use core::str;
 use git2::build::CheckoutBuilder;
 use git2::{
     BranchType, Commit, ErrorCode, FileFavor, Index, MergeOptions, ObjectType, Oid, RebaseOptions,
@@ -7,7 +8,6 @@ use rand::distributions::Alphanumeric;
 use rand::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::str;
 use std::{collections::HashMap, path::Path};
 
 use crate::field::Field;
@@ -55,7 +55,8 @@ trait RepositoryAbstraction {
             let tree = repo.find_tree(id)?;
             let sig = repo.signature()?;
             repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])?;
-            let head = repo.head()?.target().unwrap();
+            // HEAD has to exist and point at something
+            let head = repo.head().unwrap().target().unwrap();
             let head_commit = repo.find_commit(head)?;
             repo.branch("main", &head_commit, true)?;
         }
@@ -86,7 +87,8 @@ trait RepositoryAbstraction {
 
     fn signature<'a>() -> Signature<'a> {
         let current_time = &Time::new(chrono::Utc::now().timestamp(), 0);
-        Signature::new("yamabiko", "yamabiko", current_time).unwrap()
+        // unwrap: this signature has to be valid
+        Signature::new("yamabiko", "yamabiko@localhost", current_time).unwrap()
     }
 }
 
@@ -113,15 +115,12 @@ impl Collection {
         &self.repository
     }
 
-    pub fn get<D>(
+    fn get_tree_key(
         &self,
         key: &str,
         target: OperationTarget,
-    ) -> Result<Option<D>, error::GetObjectError>
-    where
-        D: DeserializeOwned,
-    {
-        let path = Self::construct_path_to_key(key);
+    ) -> Result<Option<git2::TreeEntry<'_>>, error::GetObjectError> {
+        let path = Self::construct_path_to_key(key)?;
         let branch = match target {
             OperationTarget::Main => "main",
             OperationTarget::Transaction(t) => t,
@@ -135,15 +134,42 @@ impl Collection {
             .tree()?
             .get_path(Path::new(&path))
             .ok();
-        if let Some(tree_entry) = tree_path {
-            let obj = tree_entry.to_object(repo)?;
+        Ok(tree_path)
+    }
+
+    pub fn get_raw(
+        &self,
+        key: &str,
+        target: OperationTarget,
+    ) -> Result<Option<String>, error::GetObjectError> {
+        if let Some(tree_entry) = self.get_tree_key(key, target)? {
+            let obj = tree_entry.to_object(&self.repository)?;
+            let blob = obj
+                .as_blob()
+                .ok_or_else(|| error::GetObjectError::CorruptedObject)?;
+            let blob_content = blob.content().to_owned();
+            let parsed = String::from_utf8(blob_content)?;
+            return Ok(Some(parsed));
+        };
+        Ok(None)
+    }
+
+    pub fn get<D>(
+        &self,
+        key: &str,
+        target: OperationTarget,
+    ) -> Result<Option<D>, error::GetObjectError>
+    where
+        D: DeserializeOwned,
+    {
+        if let Some(tree_entry) = self.get_tree_key(key, target)? {
+            let obj = tree_entry.to_object(&self.repository)?;
             let blob = obj
                 .as_blob()
                 .ok_or_else(|| error::GetObjectError::CorruptedObject)?;
             let blob_content = blob.content().to_owned();
             return Ok(Some(
-                self.data_format
-                    .deserialize(str::from_utf8(&blob_content).unwrap()),
+                self.data_format.deserialize(str::from_utf8(&blob_content)?),
             ));
         };
         Ok(None)
@@ -161,14 +187,17 @@ impl Collection {
         if let Ok(blob) = blob {
             let blob_content = blob.content().to_owned();
             return Ok(Some(
-                self.data_format
-                    .deserialize(str::from_utf8(&blob_content).unwrap()),
+                self.data_format.deserialize(str::from_utf8(&blob_content)?),
             ));
         };
         Ok(None)
     }
 
-    pub fn set_batch<S, I, T>(&self, items: I, target: OperationTarget) -> Result<(), git2::Error>
+    pub fn set_batch<S, I, T>(
+        &self,
+        items: I,
+        target: OperationTarget,
+    ) -> Result<(), error::SetObjectError>
     where
         S: Serialize,
         I: IntoIterator<Item = (T, S)>,
@@ -180,7 +209,7 @@ impl Collection {
             OperationTarget::Main => "main",
             OperationTarget::Transaction(t) => t,
         };
-        let commit = Collection::current_commit(repo, branch).unwrap();
+        let commit = Collection::current_commit(repo, branch)?;
         {
             let mut root_tree = commit.tree()?;
             let mut counter = 0;
@@ -198,34 +227,41 @@ impl Collection {
                 )?;
                 let hash = Oid::hash_object(ObjectType::Blob, key.as_ref().as_bytes())?;
                 let trees =
-                    Collection::make_tree(&repo, hash.as_bytes(), &root_tree, key.as_ref(), blob)?;
+                    Collection::make_tree(repo, hash.as_bytes(), &root_tree, key.as_ref(), blob)?;
                 root_tree = repo.find_tree(trees)?;
                 for (index, value) in index_values {
                     if let Some(val) = value {
-                        index.create_entry(&repo, hash, &val);
+                        index.create_entry(repo, hash, &val);
                     } else {
-                        index.delete_entry(&repo, hash);
+                        index.delete_entry(repo, hash);
                     }
                 }
             }
             let signature = Self::signature();
             let commit_msg = format!("set {} items on {}", counter, branch);
-            let new_commit = repo
-                .commit_create_buffer(&signature, &signature, &commit_msg, &root_tree, &[&commit])
-                .unwrap();
-            let commit_obj = repo
-                .commit_signed(str::from_utf8(&new_commit).unwrap(), "", None)
-                .unwrap();
-            let mut branch_ref = repo.find_branch(branch, BranchType::Local).unwrap();
-            branch_ref
-                .get_mut()
-                .set_target(commit_obj, &commit_msg)
-                .unwrap();
+            let new_commit = repo.commit_create_buffer(
+                &signature,
+                &signature,
+                &commit_msg,
+                &root_tree,
+                &[&commit],
+            )?;
+            // unwrap: commit_create_buffer should never create an invalid UTF-8
+            let commit_obj = repo.commit_signed(str::from_utf8(&new_commit).unwrap(), "", None)?;
+            let mut branch_ref = repo
+                .find_branch(branch, BranchType::Local)
+                .map_err(|_| error::SetObjectError::InvalidOperationTarget)?;
+            branch_ref.get_mut().set_target(commit_obj, &commit_msg)?;
         }
         Ok(())
     }
 
-    pub fn set<S>(&self, key: &str, value: S, target: OperationTarget) -> Result<(), git2::Error>
+    pub fn set<S>(
+        &self,
+        key: &str,
+        value: S,
+        target: OperationTarget,
+    ) -> Result<(), error::SetObjectError>
     where
         S: Serialize,
     {
@@ -234,7 +270,8 @@ impl Collection {
 
     pub fn new_transaction(&self, name: Option<&str>) -> Result<String, git2::Error> {
         let repo = &self.repository;
-        let head = repo.head()?.target().unwrap();
+        // unwrap: HEAD has to exist and point at something
+        let head = repo.head().unwrap().target().unwrap();
         let head_commit = repo.find_commit(head)?;
         let transaction_name = name.map(|n| n.to_string()).unwrap_or_else(|| {
             format!(
@@ -331,18 +368,10 @@ impl Collection {
         Ok(())
     }
 
-    pub fn add_index(
-        &self,
-        field: &str,
-        kind: index::IndexType,
-        target: OperationTarget,
-    ) -> index::Index {
-        let branch = match target {
-            OperationTarget::Main => "main",
-            OperationTarget::Transaction(t) => t,
-        };
+    pub fn add_index(&self, field: &str, kind: index::IndexType) -> index::Index {
+        let branch = "main";
         let repo = &self.repository;
-        let commit = Collection::current_commit(&repo, branch).unwrap();
+        let commit = Collection::current_commit(repo, branch).unwrap();
         let index_tree = commit.tree().unwrap();
         let index_name = format!("{}#{}.index", &field, kind);
         let existing_index = index_tree.get_name(&index_name);
@@ -407,7 +436,7 @@ impl Collection {
             .unwrap();
     }
 
-    fn index_list(&self) -> Vec<index::Index> {
+    pub fn index_list(&self) -> Vec<index::Index> {
         let repo = &self.repository;
         let index_tree = Self::current_commit(repo, "main").unwrap().tree().unwrap();
         let mut indexes = Vec::new();
@@ -521,6 +550,7 @@ impl Collection {
                 _ => e.into(),
             })?;
         for _ in 0..n {
+            repo.revert(&target_commit, None)?;
             let parent_count = target_commit.parent_count();
             if parent_count > 1 {
                 return Err(error::RevertError::BranchingHistory(target_commit.id()));
@@ -529,20 +559,18 @@ impl Collection {
                 break;
             }
             target_commit = target_commit.parent(0)?;
-            debug!(
-                "Current commit to revert to: {:?}",
-                target_commit.as_object()
-            );
+            debug!("Current commit to revert: {:?}", target_commit.as_object());
         }
         repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)?;
         Ok(())
     }
 
-    fn construct_path_to_key(key: &str) -> String {
+    fn construct_path_to_key(key: &str) -> Result<String, error::KeyError> {
         if key.contains("/") {
-            return key.to_string();
+            return Ok(key.to_string());
         }
-        let hash = Oid::hash_object(ObjectType::Blob, key.as_bytes()).unwrap();
+        let hash = Oid::hash_object(ObjectType::Blob, key.as_bytes())
+            .map_err(error::KeyError::NotHashable)?;
         let hash_bytes = hash.as_bytes();
         let mut path = String::new();
         (0..2).for_each(|x| {
@@ -551,7 +579,7 @@ impl Collection {
             path.push('/');
         });
         path.push_str(key);
-        path
+        Ok(path)
     }
 
     pub fn prefix_from_oid(oid: &Oid) -> String {
@@ -959,8 +987,8 @@ mod tests {
     #[test]
     fn test_adding_index() {
         let (db, _td) = create_db();
-        db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
-        db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
+        db.add_index("str_val", IndexType::Sequential);
+        db.add_index("str_val", IndexType::Sequential);
         db.set(
             "a",
             SampleDbStruct::new(String::from("test value")),
@@ -978,7 +1006,7 @@ mod tests {
     #[test]
     fn test_index_content() {
         let (db, _td) = create_db();
-        db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
+        db.add_index("str_val", IndexType::Sequential);
         db.set(
             "a",
             SampleDbStruct::new(String::from("1val")),
@@ -1010,7 +1038,7 @@ mod tests {
     #[test]
     fn test_index_content_numeric() {
         let (db, _td) = create_db();
-        db.add_index("num_val", IndexType::Numeric, OperationTarget::Main);
+        db.add_index("num_val", IndexType::Numeric);
         db.set(
             "b",
             InterigentDbStruct { num_val: 20 },
@@ -1067,7 +1095,7 @@ mod tests {
     #[test]
     fn test_writing_to_correct_index() {
         let (db, _td) = create_db();
-        db.add_index("str_val", IndexType::Numeric, OperationTarget::Main);
+        db.add_index("str_val", IndexType::Numeric);
         db.set(
             "a",
             SampleDbStruct::new(String::from("test")),
@@ -1090,7 +1118,7 @@ mod tests {
             OperationTarget::Main,
         )
         .unwrap();
-        db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
+        db.add_index("str_val", IndexType::Sequential);
         let index_values: Vec<git2::IndexEntry> = db.index_list()[0]
             .git_index(&db.repository)
             .iter()
@@ -1101,7 +1129,7 @@ mod tests {
     #[test]
     fn test_index_removes_entries_on_update() {
         let (db, _td) = create_db();
-        db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
+        db.add_index("str_val", IndexType::Sequential);
         let query = QueryBuilder::new().query(q("str_val", Equal, "test"));
         db.set(
             "a",
@@ -1118,7 +1146,7 @@ mod tests {
     #[test]
     fn test_index_entry_update() {
         let (db, _td) = create_db();
-        db.add_index("str_val", IndexType::Sequential, OperationTarget::Main);
+        db.add_index("str_val", IndexType::Sequential);
         let query = QueryBuilder::new().query(q("str_val", Equal, "test"));
         db.set(
             "a",

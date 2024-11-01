@@ -1,3 +1,6 @@
+use std::str::Utf8Error;
+use std::string::FromUtf8Error;
+
 use git2::Error as GitErr;
 use git2::Oid;
 
@@ -33,10 +36,23 @@ impl From<GitErr> for RevertError {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum SetObjectError {
+    InvalidOperationTarget,
+    InternalGitError(GitErr),
+}
+
+impl From<GitErr> for SetObjectError {
+    fn from(err: GitErr) -> Self {
+        Self::InternalGitError(err)
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub enum GetObjectError {
     InvalidOperationTarget,
     CorruptedObject,
-    InvalidPathToKey(GitErr),
+    ValueIsNotValidUTF8(Utf8Error),
+    InvalidKey(KeyError),
     /// Unknown error caused by git.
     InternalGitError(GitErr),
 }
@@ -44,6 +60,24 @@ pub enum GetObjectError {
 impl From<GitErr> for GetObjectError {
     fn from(err: GitErr) -> Self {
         Self::InternalGitError(err)
+    }
+}
+
+impl From<KeyError> for GetObjectError {
+    fn from(err: KeyError) -> Self {
+        Self::InvalidKey(err)
+    }
+}
+
+impl From<Utf8Error> for GetObjectError {
+    fn from(err: Utf8Error) -> Self {
+        Self::ValueIsNotValidUTF8(err)
+    }
+}
+
+impl From<FromUtf8Error> for GetObjectError {
+    fn from(err: FromUtf8Error) -> Self {
+        Self::ValueIsNotValidUTF8(err.utf8_error())
     }
 }
 
@@ -61,4 +95,9 @@ impl From<GitErr> for TransactionError {
     fn from(err: GitErr) -> Self {
         Self::InternalGitError(err)
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum KeyError {
+    NotHashable(GitErr),
 }

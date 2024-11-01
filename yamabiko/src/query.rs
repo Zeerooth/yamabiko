@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn test_resolution_strategy_and_index() {
         let (db, _td) = create_db();
-        db.add_index("usize_val", IndexType::Numeric, OperationTarget::Main);
+        db.add_index("usize_val", IndexType::Numeric);
         let result = QueryBuilder::new()
             .query(q("usize_val", Equal, 22) & q("str_val", Equal, "qwerty"))
             .execute(&db);
@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn test_resolution_strategy_or_no_index() {
         let (db, _td) = create_db();
-        db.add_index("usize_val", IndexType::Numeric, OperationTarget::Main);
+        db.add_index("usize_val", IndexType::Numeric);
         let result = QueryBuilder::new()
             .query(q("usize_val", Equal, 22) | q("str_val", Equal, "qwerty"))
             .execute(&db);
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn test_query_results_with_index() {
         let (db, _td) = create_db();
-        db.add_index("usize_val", IndexType::Numeric, OperationTarget::Main);
+        db.add_index("usize_val", IndexType::Numeric);
         let result = QueryBuilder::new()
             .query(q("usize_val", Greater, 22))
             .execute(&db);
@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn test_query_results_every_ordering() {
         let (db, _td) = create_db();
-        db.add_index("usize_val", IndexType::Numeric, OperationTarget::Main);
+        db.add_index("usize_val", IndexType::Numeric);
         const INIT_DB_SIZE: usize = 1_000;
         let hm: [usize; INIT_DB_SIZE] = core::array::from_fn(|i| i + 1);
         let hm2 = hm.iter().map(|x| {

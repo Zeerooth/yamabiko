@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::{fmt::Display, path::Path};
 
 use git2::{Index as GitIndex, IndexEntry, IndexTime, Oid, Repository};
@@ -12,8 +13,10 @@ pub enum IndexType {
     Collection,
 }
 
-impl IndexType {
-    pub fn from_name(name: &str) -> Result<Self, String> {
+impl FromStr for IndexType {
+    type Err = String;
+
+    fn from_str(name: &str) -> Result<Self, String> {
         match name {
             "numeric" => Ok(Self::Numeric),
             "sequential" => Ok(Self::Sequential),
@@ -56,7 +59,7 @@ impl Index {
     pub fn from_name(name: &str) -> Result<Self, String> {
         let token_list = name.rsplit_once(".").unwrap().0.rsplit_once("#");
         if let Some(tokens) = token_list {
-            return Ok(Self::new(name, tokens.0, IndexType::from_name(tokens.1)?));
+            return Ok(Self::new(name, tokens.0, IndexType::from_str(tokens.1)?));
         }
         Err(String::from("No such index"))
     }

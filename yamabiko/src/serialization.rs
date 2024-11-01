@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::field::Field;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum DataFormat {
     Json,
     #[cfg(feature = "yaml")]

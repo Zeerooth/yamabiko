@@ -125,7 +125,7 @@ impl Replicator {
         }
         let mut push_options = PushOptions::new();
         push_options.remote_callbacks(callbacks);
-        remote.push(&["refs/heads/main"], Some(&mut push_options))?;
+        remote.push(&["+refs/heads/main"], Some(&mut push_options))?;
         if let ReplicationMethod::Periodic(_) = self.replication_method {
             let current_time = Utc::now().timestamp();
             let mut reflog = self

@@ -18,11 +18,7 @@ fn bench_sets(bench: &mut Criterion) {
     });
     bench.bench_function("sets on empty db with an index", |b| {
         let (db, _td) = create_db();
-        db.add_index(
-            "str_val",
-            yamabiko::index::IndexType::Sequential,
-            OperationTarget::Main,
-        );
+        db.add_index("str_val", yamabiko::index::IndexType::Sequential);
         let mut i = 0;
         b.iter(|| {
             db.set(
@@ -55,11 +51,7 @@ fn bench_sets(bench: &mut Criterion) {
         let (db, _td) = create_db();
         const INIT_DB_SIZE: usize = 5_000;
         let hm: [usize; INIT_DB_SIZE] = core::array::from_fn(|i| i + 1);
-        db.add_index(
-            "str_val",
-            yamabiko::index::IndexType::Sequential,
-            OperationTarget::Main,
-        );
+        db.add_index("str_val", yamabiko::index::IndexType::Sequential);
         let hm2 = hm
             .iter()
             .map(|x| (format!("key-{}", x), "some value".as_bytes()));
