@@ -1,5 +1,7 @@
 # Yamabiko
 
+![yamabiko](./assets/logo.png)
+
 Embedded database based on git
 
 ## Desclaimer
@@ -45,9 +47,8 @@ async fn main() {
         passphrase: None,
     };
 
-    // In this example we spawn the replicator in the same thread, so it's going to be blocking.
-    // The proper way to replicate data to remotes is to have a replicator per remote per collection
-    // running inside a thread or a tokio task. However, this is out of scope for this simple demo. 
+    // Replicator is only necessary if you make use of replication
+    // You need a replicator per remote per each collection
     let repl = Replicator::initialize(
         repo_path,
         "gh_backup",
@@ -101,9 +102,9 @@ async fn main() {
     }
 
     // Lastly, by default queries are going to scan the entire repository,
-    // deserialize the data and compare the fields to find the results
+    // deserialize the data and compare the fields to find the results.
     // For larger collections and queries this is going to be !extremely! slow.
-    // Make sure to create relevant indexes to make queries faster
+    // Make sure to create relevant indexes to make queries faster.
     db.add_index("timestamp", IndexType::Numeric, OperationTarget::Main);
 
     // Let's join the replication task and see if it succeded.
@@ -113,5 +114,5 @@ async fn main() {
 
 ## Examples & Tests
 
-[benches directory contains many examples on how to use this library](./benches/)
+[benches directory contains many examples on how to use this library](./yamabiko/benches/)
 
