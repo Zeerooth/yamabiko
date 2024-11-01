@@ -75,6 +75,19 @@ trait RepositoryAbstraction {
             },
         }
     }
+
+    fn current_commit<'a>(repo: &'a Repository, branch: &str) -> Result<Commit<'a>, git2::Error> {
+        let reference = repo
+            .find_branch(branch.as_ref(), BranchType::Local)?
+            .into_reference();
+        let commit = reference.peel_to_commit()?;
+        Ok(commit)
+    }
+
+    fn signature<'a>() -> Signature<'a> {
+        let current_time = &Time::new(chrono::Utc::now().timestamp(), 0);
+        Signature::new("yamabiko", "yamabiko", current_time).unwrap()
+    }
 }
 
 pub struct Collection {
@@ -525,14 +538,6 @@ impl Collection {
         Ok(())
     }
 
-    fn current_commit<'a>(repo: &'a Repository, branch: &str) -> Result<Commit<'a>, git2::Error> {
-        let reference = repo
-            .find_branch(branch.as_ref(), BranchType::Local)?
-            .into_reference();
-        let commit = reference.peel_to_commit()?;
-        Ok(commit)
-    }
-
     fn construct_path_to_key(key: &str) -> String {
         if key.contains("/") {
             return key.to_string();
@@ -563,11 +568,6 @@ impl Collection {
 
     pub fn construct_oid_from_path(path: &str) -> Oid {
         Oid::from_str(&path[path.len() - 22..].replace("/", "")).unwrap()
-    }
-
-    fn signature<'a>() -> Signature<'a> {
-        let current_time = &Time::new(chrono::Utc::now().timestamp(), 0);
-        Signature::new("yamabiko", "yamabiko", current_time).unwrap()
     }
 }
 

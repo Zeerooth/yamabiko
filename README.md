@@ -56,6 +56,7 @@ async fn main() {
         // Syncing with remote repos is slow
         // And frequent requests are going to get you rate limited if you use an external service
         // Consider using ReplicationMethod::Random(0.05) - only ~5% of commits are going to result in a sync
+        // Or ReplicationMethod::Periodic(300) - it'll sync at most every 5 minutes
         ReplicationMethod::All,
         Some(credentials),
     ).unwrap(); 
@@ -82,7 +83,10 @@ async fn main() {
     db.set(key, to_save, yamabiko::OperationTarget::Main).unwrap();
     
     // Only necessary if you make use of replication
-    repl.replicate().unwrap();
+    // It's recommended to spawn replication tasks asynchronously to avoid blocking
+    let sync_task = tokio::spawn(async move {
+        repl.replicate().unwrap();
+    }); 
 
     // QueryBuilder is not very powerful yet,
     // but it allows for making simple queries on data saved in the collection
@@ -101,6 +105,9 @@ async fn main() {
     // For larger collections and queries this is going to be !extremely! slow.
     // Make sure to create relevant indexes to make queries faster
     db.add_index("timestamp", IndexType::Numeric, OperationTarget::Main);
+
+    // Let's join the replication task and see if it succeded.
+    sync_task.await.expect("Failed replication");
 }
 ```
 

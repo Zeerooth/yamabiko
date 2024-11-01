@@ -7,7 +7,7 @@ use git2::{ObjectType, Oid, Repository, TreeWalkResult};
 use crate::field::Field;
 use crate::index::Index;
 use crate::serialization::DataFormat;
-use crate::{debug, Collection};
+use crate::{debug, Collection, RepositoryAbstraction};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolutionStrategy {

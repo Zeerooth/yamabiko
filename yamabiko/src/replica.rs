@@ -1,14 +1,15 @@
 use std::path::{Path, PathBuf};
 
-use git2::{Cred, PushOptions, Remote, RemoteCallbacks, Repository};
+use chrono::{DateTime, Utc};
+use git2::{Cred, ErrorCode, PushOptions, Reference, Remote, RemoteCallbacks, Repository};
 use rand::Rng;
 
-use crate::{error, RepositoryAbstraction};
+use crate::{debug, error, RepositoryAbstraction};
 
 #[derive(Clone)]
 pub enum ReplicationMethod {
     All,
-    Partial(usize),
+    Periodic(i64),
     Random(f64),
 }
 
@@ -54,12 +55,52 @@ impl Replicator {
         }
     }
 
+    fn last_push_ref(remote_name: &str) -> String {
+        format!("refs/replicas/{}_last_push", remote_name)
+    }
+
+    fn resolve_periodic_ref<'a>(
+        repo: &'a Repository,
+        remote_name: &str,
+    ) -> Result<Reference<'a>, git2::Error> {
+        let ref_name = Self::last_push_ref(remote_name);
+        let reference = repo.find_reference(&ref_name);
+        match reference {
+            Ok(reference) => Ok(reference),
+            Err(err) => {
+                if err.code() != ErrorCode::NotFound {
+                    return Err(err);
+                }
+                let reference = repo.reference_symbolic(ref_name.as_str(), "HEAD", false, "")?;
+                repo.reference_ensure_log(&ref_name).unwrap();
+                let mut reflog = repo.reflog(&ref_name)?;
+                let head = repo.head().unwrap();
+                reflog.append(
+                    head.target().unwrap(),
+                    &Self::signature(),
+                    Some(0.to_string().as_str()),
+                )?;
+                reflog.write()?;
+                Ok(reference)
+            }
+        }
+    }
+
     pub fn replicate(&self) -> Result<bool, git2::Error> {
         let rand_res: f64 = rand::thread_rng().gen();
         let replicate = match self.replication_method {
             ReplicationMethod::All => true,
             ReplicationMethod::Random(chance) => rand_res < chance,
-            _ => true,
+            ReplicationMethod::Periodic(peroid) => {
+                Self::resolve_periodic_ref(&self.repository, &self.remote_name)?;
+                let reflog = &self
+                    .repository
+                    .reflog(Self::last_push_ref(self.remote_name.as_str()).as_str())?;
+                debug!("Reflog has {} entries", reflog.len());
+                let last_push = reflog.get(0).unwrap().message().unwrap().parse().unwrap();
+                let next_push_timestamp = DateTime::from_timestamp(last_push, 0).unwrap();
+                next_push_timestamp.timestamp() + peroid < Utc::now().timestamp()
+            }
         };
         if !replicate {
             return Ok(false);
@@ -85,6 +126,19 @@ impl Replicator {
         let mut push_options = PushOptions::new();
         push_options.remote_callbacks(callbacks);
         remote.push(&["refs/heads/main"], Some(&mut push_options))?;
+        if let ReplicationMethod::Periodic(_) = self.replication_method {
+            let current_time = Utc::now().timestamp();
+            let mut reflog = self
+                .repository
+                .reflog(&Self::last_push_ref(self.remote_name.as_str()))?;
+            let head = self.repository.head().unwrap();
+            reflog.append(
+                head.target().unwrap(),
+                &Self::signature(),
+                Some(current_time.to_string().as_str()),
+            )?;
+            reflog.write()?;
+        }
         Ok(true)
     }
 }
@@ -121,6 +175,37 @@ mod tests {
             "test",
             _td_backup.path().to_str().unwrap(),
             ReplicationMethod::All,
+            None,
+        )
+        .unwrap();
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("a value")),
+            OperationTarget::Main,
+        )
+        .unwrap();
+        let result = repl.replicate().unwrap();
+        assert!(result);
+        assert_eq!(
+            db_backup
+                .get::<SampleDbStruct>("a", OperationTarget::Main)
+                .unwrap()
+                .unwrap(),
+            SampleDbStruct {
+                str_val: String::from("a value")
+            }
+        );
+    }
+
+    #[test]
+    fn test_replica_periodic() {
+        let (db, _td) = create_db();
+        let (db_backup, _td_backup) = create_db();
+        let repl = Replicator::initialize(
+            _td.path(),
+            "test",
+            _td_backup.path().to_str().unwrap(),
+            ReplicationMethod::Periodic(0),
             None,
         )
         .unwrap();
