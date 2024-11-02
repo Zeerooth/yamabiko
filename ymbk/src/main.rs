@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use clap::{builder::TypedValueParser, Parser, Subcommand};
+use git2::Oid;
 use yamabiko::{serialization::DataFormat, Collection, OperationTarget};
 
 /// Command-line program to manage yamabiko collections
@@ -27,9 +28,17 @@ enum Command {
         #[command(subcommand)]
         command: IndexCommand,
     },
-    Revert {
+    RevertNCommits {
         number: usize,
-        target: String
+        #[clap(long, short, default_value = "main")]
+        target: String,
+        #[clap(long, action)]
+        keep_history: bool
+    },
+    RevertToCommit {
+        commit: String, 
+        #[clap(long, action)]
+        keep_history: bool
     }
 }
 
@@ -73,9 +82,19 @@ fn main() {
                 println!("{:?}", collection.add_index(&field, kind));
             },
         },
-        Command::Revert { number , target} => {
-            collection.revert_n_commits(number, OperationTarget::Transaction(&target)).unwrap();
+        Command::RevertNCommits { number , target, keep_history} => {
+            collection.revert_n_commits(number, OperationTarget::Transaction(&target), keep_history).unwrap();
             println!("Successfully reverted {} commits on {}", number, target);
+        },
+        Command::RevertToCommit { commit , keep_history} => {
+            let oid = Oid::from_str(&commit);
+            match oid {
+                Ok(oid) => {
+                    collection.revert_main_to_commit(oid,  keep_history).unwrap();
+                    println!("Successfully reverted to commit {} on main", commit);
+                }
+                Err(_err) => eprintln!("Invalid commit Oid format")
+            }
         },
     }
 }

@@ -32,7 +32,7 @@ impl Replicator {
         credentials: Option<RemoteCredentials>,
     ) -> Result<Self, error::InitializationError> {
         let repo = Self::load_or_create_repo(repo_path)?;
-        let remote_name_formatted = format!("_yamabiko_replica_{}", remote_name);
+        let remote_name_formatted = format!("_repl_{}", remote_name);
         Self::ensure_remote(&repo, remote_name, remote_url)?;
         Ok(Self {
             repository: repo,
@@ -86,6 +86,25 @@ impl Replicator {
         }
     }
 
+    fn tags_to_push(&self) -> Result<Vec<String>, git2::Error> {
+        let glob = format!("refs/history_tags/{}/*", self.remote_name);
+        let refs = self.repository.references_glob(glob.as_str())?;
+        let mut to_push = Vec::new();
+        to_push.push(String::from("+refs/heads/main"));
+        for reference in refs.flatten() {
+            let ref_name = reference.name().unwrap();
+            let last_part = ref_name.split('/').last().unwrap();
+            let tag_name = format!("refs/tags/{}__{}", self.remote_name, last_part);
+            self.repository.tag_lightweight(
+                tag_name.as_str(),
+                reference.peel_to_commit()?.as_object(),
+                true,
+            )?;
+            to_push.push(tag_name);
+        }
+        Ok(to_push)
+    }
+
     pub fn replicate(&self) -> Result<bool, git2::Error> {
         let rand_res: f64 = rand::thread_rng().gen();
         let replicate = match self.replication_method {
@@ -125,7 +144,8 @@ impl Replicator {
         }
         let mut push_options = PushOptions::new();
         push_options.remote_callbacks(callbacks);
-        remote.push(&["+refs/heads/main"], Some(&mut push_options))?;
+        let tags_to_push = self.tags_to_push()?;
+        remote.push(tags_to_push.as_ref(), Some(&mut push_options))?;
         if let ReplicationMethod::Periodic(_) = self.replication_method {
             let current_time = Utc::now().timestamp();
             let mut reflog = self

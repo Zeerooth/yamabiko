@@ -1,3 +1,4 @@
+use chrono::Utc;
 use core::str;
 use git2::build::CheckoutBuilder;
 use git2::{
@@ -525,11 +526,39 @@ impl Collection {
         }
     }
 
-    pub fn revert_main_to_commit(&self, commit: Oid) -> Result<(), error::RevertError> {
+    fn prepare_remote_push_tags(&self, head: Oid, target: Oid) -> Result<(), git2::Error> {
+        let remotes = self.repository.remotes()?;
+        let current_time = Utc::now();
+        let tag_name = format!(
+            "revert-{}-{}-{}",
+            &head.to_string()[0..7],
+            &target.to_string()[0..7],
+            current_time.timestamp()
+        );
+        for remote in remotes.iter().flatten() {
+            let ref_name = format!("refs/history_tags/{}/{}", remote, tag_name);
+            self.repository.reference(&ref_name, head, true, "")?;
+        }
+        Ok(())
+    }
+
+    pub fn revert_main_to_commit(
+        &self,
+        commit: Oid,
+        keep_history: bool,
+    ) -> Result<(), error::RevertError> {
         let repo = &self.repository;
         let target_commit = repo
             .find_commit(commit)
             .map_err(|_| error::RevertError::TargetCommitNotFound(commit))?;
+        if keep_history {
+            let current_commit = Self::current_commit(repo, OperationTarget::Main.to_git_branch())
+                .map_err(|e| match e.code() {
+                    ErrorCode::NotFound => error::RevertError::InvalidOperationTarget,
+                    _ => e.into(),
+                })?;
+            self.prepare_remote_push_tags(current_commit.id(), target_commit.id())?;
+        }
         repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)?;
         Ok(())
     }
@@ -538,19 +567,20 @@ impl Collection {
         &self,
         n: usize,
         target: OperationTarget,
+        keep_history: bool,
     ) -> Result<(), error::RevertError> {
         debug!("Reverting {} commits", n);
         if n == 0 {
             return Ok(());
         }
         let repo = &self.repository;
-        let mut target_commit =
+        let current_commit =
             Self::current_commit(repo, target.to_git_branch()).map_err(|e| match e.code() {
                 ErrorCode::NotFound => error::RevertError::InvalidOperationTarget,
                 _ => e.into(),
             })?;
+        let mut target_commit = current_commit.clone();
         for _ in 0..n {
-            repo.revert(&target_commit, None)?;
             let parent_count = target_commit.parent_count();
             if parent_count > 1 {
                 return Err(error::RevertError::BranchingHistory(target_commit.id()));
@@ -560,6 +590,9 @@ impl Collection {
             }
             target_commit = target_commit.parent(0)?;
             debug!("Current commit to revert: {:?}", target_commit.as_object());
+        }
+        if keep_history {
+            self.prepare_remote_push_tags(current_commit.id(), target_commit.id())?;
         }
         repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)?;
         Ok(())
@@ -732,7 +765,8 @@ mod tests {
                 str_val: String::from("changed b value")
             }
         );
-        db.revert_n_commits(1, OperationTarget::Main).unwrap();
+        db.revert_n_commits(1, OperationTarget::Main, false)
+            .unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("b", OperationTarget::Main)
                 .unwrap()
@@ -779,7 +813,7 @@ mod tests {
             .into_reference();
         let head_commit = reference.peel_to_commit().unwrap();
         let first_commit = head_commit.parent(0).unwrap().parent(0).unwrap().clone();
-        db.revert_main_to_commit(first_commit.id()).unwrap();
+        db.revert_main_to_commit(first_commit.id(), false).unwrap();
         assert_eq!(
             db.get::<SampleDbStruct>("a", OperationTarget::Main)
                 .unwrap()

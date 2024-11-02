@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 yamabiko = { workspace = true }
 clap = { version = "4.5.20", features = ["derive"] }
+git2 = { workspace = true }

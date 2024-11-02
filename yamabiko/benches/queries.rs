@@ -36,7 +36,7 @@ fn bench_queries(bench: &mut Criterion) {
     });
 
     let (db, _td) = create_db();
-    db.add_index("usize_val", IndexType::Numeric, OperationTarget::Main);
+    db.add_index("usize_val", IndexType::Numeric);
     let hm: [usize; INIT_DB_SIZE] = core::array::from_fn(|i| i + 1);
     let hm2 = hm.iter().map(|x| {
         (
