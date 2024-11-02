@@ -105,6 +105,28 @@ impl Replicator {
         Ok(to_push)
     }
 
+    fn remove_old_tags(&self, list: Vec<String>) -> Result<(), git2::Error> {
+        for tag in list {
+            if tag == "+refs/heads/main" {
+                continue;
+            }
+            let history_tag = tag.replace(format!("refs/tags/{}__", self.remote_name).as_str(), "");
+            let reference = self.repository.find_reference(&format!(
+                "refs/history_tags/{}/{}",
+                self.remote_name, history_tag
+            ));
+            match reference {
+                Ok(mut reference) => reference.delete()?,
+                Err(err) => {
+                    if err.code() != ErrorCode::NotFound {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn replicate(&self) -> Result<bool, git2::Error> {
         let rand_res: f64 = rand::thread_rng().gen();
         let replicate = match self.replication_method {
@@ -146,6 +168,7 @@ impl Replicator {
         push_options.remote_callbacks(callbacks);
         let tags_to_push = self.tags_to_push()?;
         remote.push(tags_to_push.as_ref(), Some(&mut push_options))?;
+        self.remove_old_tags(tags_to_push)?;
         if let ReplicationMethod::Periodic(_) = self.replication_method {
             let current_time = Utc::now().timestamp();
             let mut reflog = self
