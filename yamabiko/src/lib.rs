@@ -20,6 +20,7 @@ pub mod logging;
 pub mod query;
 pub mod replica;
 pub mod serialization;
+pub mod squash;
 
 pub enum OperationTarget<'a> {
     Main,

@@ -50,7 +50,10 @@ impl PartialOrd<serde_json::Value> for Field {
         match self {
             Field::Float(f) => other.as_f64().map(|x| x.partial_cmp(f)).unwrap_or(None),
             Field::Int(i) => other.as_i64().map(|x| x.partial_cmp(i)).unwrap_or(None),
-            Field::String(s) => other.as_str().map(|x| x.partial_cmp(s)).unwrap_or(None),
+            Field::String(s) => other
+                .as_str()
+                .map(|x| x.partial_cmp(s.as_str()))
+                .unwrap_or(None),
         }
     }
 }

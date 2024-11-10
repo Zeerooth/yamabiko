@@ -94,7 +94,7 @@ impl Replicator {
         for reference in refs.flatten() {
             let ref_name = reference.name().unwrap();
             let last_part = ref_name.split('/').last().unwrap();
-            let tag_name = format!("refs/tags/{}__{}", self.remote_name, last_part);
+            let tag_name = format!("refs/tags/{}", last_part);
             self.repository.tag_lightweight(
                 tag_name.as_str(),
                 reference.peel_to_commit()?.as_object(),
@@ -102,19 +102,28 @@ impl Replicator {
             )?;
             to_push.push(tag_name);
         }
+        let glob_rm = format!("refs/history_rm/{}/*", self.remote_name);
+        let refs_rm = self.repository.references_glob(glob_rm.as_str())?;
+        for reference in refs_rm.flatten() {
+            let ref_name = reference.name().unwrap();
+            let last_part = ref_name.split('/').last().unwrap();
+            let tag_name = format!(":refs/tags/{}", last_part);
+            to_push.push(tag_name);
+        }
         Ok(to_push)
     }
 
-    fn remove_old_tags(&self, list: Vec<String>) -> Result<(), git2::Error> {
+    fn remove_old_tags(&self, list: &Vec<String>) -> Result<(), git2::Error> {
         for tag in list {
             if tag == "+refs/heads/main" {
                 continue;
             }
             let history_tag = tag.replace(format!("refs/tags/{}__", self.remote_name).as_str(), "");
-            let reference = self.repository.find_reference(&format!(
-                "refs/history_tags/{}/{}",
-                self.remote_name, history_tag
-            ));
+            let reference_name = match history_tag.starts_with(":") {
+                true => format!("refs/history_rm/{}/{}", self.remote_name, &history_tag[1..]),
+                false => format!("refs/history_tags/{}/{}", self.remote_name, history_tag),
+            };
+            let reference = self.repository.find_reference(&reference_name);
             match reference {
                 Ok(mut reference) => reference.delete()?,
                 Err(err) => {
@@ -151,6 +160,7 @@ impl Replicator {
             self.remote_name.as_str(),
             self.remote_url.as_str(),
         )?;
+        let mut tags_to_remove = Vec::new();
         let mut callbacks = RemoteCallbacks::new();
         if let Some(ref cred) = self.credentials {
             callbacks.credentials(|_, username_from_url, _| {
@@ -164,11 +174,20 @@ impl Replicator {
                 )
             });
         }
+        callbacks.push_update_reference(|reference, result| {
+            if let Some(_result) = result {
+                debug!("Pushing {} failed: {}", reference, _result);
+                return Ok(());
+            }
+            tags_to_remove.push(reference.to_string());
+            Ok(())
+        });
         let mut push_options = PushOptions::new();
         push_options.remote_callbacks(callbacks);
         let tags_to_push = self.tags_to_push()?;
         remote.push(tags_to_push.as_ref(), Some(&mut push_options))?;
-        self.remove_old_tags(tags_to_push)?;
+        drop(push_options);
+        self.remove_old_tags(&tags_to_remove)?;
         if let ReplicationMethod::Periodic(_) = self.replication_method {
             let current_time = Utc::now().timestamp();
             let mut reflog = self

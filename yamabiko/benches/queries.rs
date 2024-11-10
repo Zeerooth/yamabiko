@@ -18,7 +18,7 @@ fn bench_queries(bench: &mut Criterion) {
             yamabiko::test::ComplexDbStruct::new(String::from("test value"), *x, *x as f64),
         )
     });
-    db.set_batch(hm2, OperationTarget::Main);
+    db.set_batch(hm2, OperationTarget::Main).unwrap();
     bench.bench_function("query large database without indexes", |b| {
         b.iter(|| {
             assert_eq!(
@@ -44,7 +44,7 @@ fn bench_queries(bench: &mut Criterion) {
             yamabiko::test::ComplexDbStruct::new(String::from("test value"), *x, *x as f64),
         )
     });
-    db.set_batch(hm2, OperationTarget::Main);
+    db.set_batch(hm2, OperationTarget::Main).unwrap();
     bench.bench_function("query large database with an index", |b| {
         b.iter(|| {
             let query_result = QueryBuilder::new()

@@ -12,7 +12,8 @@ fn bench_sets(bench: &mut Criterion) {
                 format!("key-{}", i).as_str(),
                 yamabiko::test::SampleDbStruct::new(String::from("test value")),
                 OperationTarget::Main,
-            );
+            )
+            .unwrap();
             i += 1;
         })
     });
@@ -25,7 +26,8 @@ fn bench_sets(bench: &mut Criterion) {
                 format!("key-{}", i).as_str(),
                 yamabiko::test::SampleDbStruct::new(String::from("test value")),
                 OperationTarget::Main,
-            );
+            )
+            .unwrap();
             i += 1;
         })
     });
@@ -36,14 +38,15 @@ fn bench_sets(bench: &mut Criterion) {
         let hm2 = hm
             .iter()
             .map(|x| (format!("key-{}", x), "some value".as_bytes()));
-        db.set_batch(hm2, OperationTarget::Main);
+        db.set_batch(hm2, OperationTarget::Main).unwrap();
         let mut i = INIT_DB_SIZE;
         b.iter(|| {
             db.set(
                 format!("key-{}", i).as_str(),
                 yamabiko::test::SampleDbStruct::new(String::from("test value")),
                 OperationTarget::Main,
-            );
+            )
+            .unwrap();
             i += 1;
         })
     });
@@ -55,14 +58,15 @@ fn bench_sets(bench: &mut Criterion) {
         let hm2 = hm
             .iter()
             .map(|x| (format!("key-{}", x), "some value".as_bytes()));
-        db.set_batch(hm2, OperationTarget::Main);
+        db.set_batch(hm2, OperationTarget::Main).unwrap();
         let mut i = INIT_DB_SIZE;
         b.iter(|| {
             db.set(
                 format!("key-{}", i).as_str(),
                 yamabiko::test::SampleDbStruct::new(String::from("test value")),
                 OperationTarget::Main,
-            );
+            )
+            .unwrap();
             i += 1;
         })
     });
@@ -77,7 +81,7 @@ fn bench_sets(bench: &mut Criterion) {
                     yamabiko::test::SampleDbStruct::new(String::from("test value")),
                 );
             }
-            db.set_batch(hm, OperationTarget::Main);
+            db.set_batch(hm, OperationTarget::Main).unwrap();
             i += 100;
         });
     });
@@ -92,7 +96,8 @@ fn bench_sets_and_gets(bench: &mut Criterion) {
                 format!("key-{}", i).as_str(),
                 yamabiko::test::SampleDbStruct::new(String::from("test value")),
                 OperationTarget::Main,
-            );
+            )
+            .unwrap();
             db.get::<yamabiko::test::SampleDbStruct>(
                 format!("key-{}", i).as_str(),
                 OperationTarget::Main,
@@ -108,14 +113,15 @@ fn bench_sets_and_gets(bench: &mut Criterion) {
         let hm2 = hm
             .iter()
             .map(|x| (format!("key-{}", x), "some value".as_bytes()));
-        db.set_batch(hm2, OperationTarget::Main);
+        db.set_batch(hm2, OperationTarget::Main).unwrap();
         let mut i = INIT_DB_SIZE;
         b.iter(|| {
             db.set(
                 format!("key-{}", i).as_str(),
                 yamabiko::test::SampleDbStruct::new(String::from("test value")),
                 OperationTarget::Main,
-            );
+            )
+            .unwrap();
             db.get::<yamabiko::test::SampleDbStruct>(
                 format!("key-{}", i).as_str(),
                 OperationTarget::Main,
