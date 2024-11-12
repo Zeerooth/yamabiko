@@ -4,7 +4,7 @@
 
 ![yamabiko](./assets/logo.png)
 
-Embedded database based on git
+Yamabiko is an embedded database system with version control based on git. There is a rust library and a CLI tool `ymbk` available.
 
 ## Desclaimer
 
@@ -12,13 +12,13 @@ Embedded database based on git
 
 ## Features
 
-- [x] Get, set and commit serializable data to a local git repo using Key-Value
+- [x] Get, set and commit serializable data to a local git repo using Key-Value storage
 - [x] Optional long-living transactions (under separate branches)
 - [x] Manage indexes for faster queries
 - [x] Replicate data to remote repositories (backup)
 - [x] Keep the entire history of changes and easily revert back
 
-## Quick showcase
+## Library demo
 
 ```rust
 
@@ -112,7 +112,33 @@ async fn main() {
 }
 ```
 
-## Examples & Tests
+## ymbk CLI tool
 
-[benches directory contains many examples on how to use this library](./yamabiko/benches/)
+```
+Command-line program to manage yamabiko collections
+
+Usage: ymbk [OPTIONS] <REPO> <COMMAND>
+
+Commands:
+  get               Get data under selected key
+  indexes           Operations on indexes
+  revert-n-commits  
+  revert-to-commit  
+  help              Print this message or the help of the given subcommand(s)
+
+Arguments:
+  <REPO>  Path to the repository to operate on
+
+Options:
+  -f, --format <FORMAT>  [default: json]
+  -h, --help             Print help
+  -V, --version          Print version
+
+Examples:
+  [Output the value stored under the key in the specified collection]
+  ymbk ./collection get key1 
+
+  [Add a numeric index on the field 'number' in the specified collection]
+  ymbk ./collection indexes add --field addr --kind numeric
+```
 

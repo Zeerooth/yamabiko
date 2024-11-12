@@ -4,9 +4,17 @@ use clap::{builder::TypedValueParser, Parser, Subcommand};
 use git2::Oid;
 use yamabiko::{serialization::DataFormat, Collection, OperationTarget};
 
+static ADDITIONAL_HELP_TEXT: &str = color_print::cstr!(
+r#"<bold><underline>Examples:</underline></bold>
+  [Output the value stored under the key in the specified collection]
+  <bold>ymbk ./collection get key1</bold> 
+
+  [Add a numeric index on the field 'number' in the specified collection]
+  <bold>ymbk ./collection indexes add --field addr --kind numeric</bold>"#);
+
 /// Command-line program to manage yamabiko collections
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about = None, after_help = ADDITIONAL_HELP_TEXT)]
 struct Args {
     /// Path to the repository to operate on
     #[arg(index(1))]
