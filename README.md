@@ -1,5 +1,7 @@
 # Yamabiko
 
+[![codecov](https://codecov.io/github/zeerooth/yamabiko/graph/badge.svg?token=4OHTYJEEWX)](https://codecov.io/github/zeerooth/yamabiko)
+
 ![yamabiko](./assets/logo.png)
 
 Embedded database based on git
@@ -37,7 +39,7 @@ async fn main() {
     // You can mix different structs for de/serialization,
     // but it's a good idea to have a separate collection for each type
     let repo_path = Path::new("/tmp/repo");
-    let mut db = Collection::load_or_create(repo_path, DataFormat::Json).unwrap();
+    let mut db = Collection::initialize(repo_path, DataFormat::Json).unwrap();
 
     // Setting credentials is only necessary if you plan to replicate data to a remote repo as a backup
     let credentials = RemoteCredentials {
@@ -60,9 +62,7 @@ async fn main() {
         // Or ReplicationMethod::Periodic(300) - it'll sync at most every 5 minutes
         ReplicationMethod::All,
         Some(credentials),
-    ).unwrap(); 
-
-    println!("We have {} replicas loaded!", db.replicas().len());
+    ).unwrap();  
  
     let to_save = LogStruct {
         addr: String::from("8.8.8.8"),
@@ -80,7 +80,7 @@ async fn main() {
 
     // "set" will save the data as a blob and make a new commit
     // You can also use "set_batch" for updating many records at once
-    // And long-living transactions to prevent the data from being commited to the main branch automatically
+    // And long-living transactions to prevent the data from being committed to the main branch automatically
     db.set(key, to_save, yamabiko::OperationTarget::Main).unwrap();
     
     // Only necessary if you make use of replication
@@ -105,9 +105,9 @@ async fn main() {
     // deserialize the data and compare the fields to find the results.
     // For larger collections and queries this is going to be !extremely! slow.
     // Make sure to create relevant indexes to make queries faster.
-    db.add_index("timestamp", IndexType::Numeric, OperationTarget::Main);
+    db.add_index("timestamp", IndexType::Numeric);
 
-    // Let's join the replication task and see if it succeded.
+    // Let's join the replication task and see if it succeeded.
     sync_task.await.expect("Failed replication");
 }
 ```
