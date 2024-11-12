@@ -33,7 +33,7 @@ impl Replicator {
     ) -> Result<Self, error::InitializationError> {
         let repo = Self::load_or_create_repo(repo_path)?;
         let remote_name_formatted = format!("_repl_{}", remote_name);
-        Self::ensure_remote(&repo, remote_name, remote_url)?;
+        Self::ensure_remote(&repo, &remote_name_formatted, remote_url)?;
         Ok(Self {
             repository: repo,
             remote_name: remote_name_formatted,
@@ -96,7 +96,7 @@ impl Replicator {
             let last_part = ref_name.split('/').last().unwrap();
             let tag_name = format!("refs/tags/{}", last_part);
             self.repository.tag_lightweight(
-                tag_name.as_str(),
+                last_part,
                 reference.peel_to_commit()?.as_object(),
                 true,
             )?;
@@ -179,6 +179,7 @@ impl Replicator {
                 debug!("Pushing {} failed: {}", reference, _result);
                 return Ok(());
             }
+            debug!("Pushing {} to {} succeeded", reference, self.remote_name);
             tags_to_remove.push(reference.to_string());
             Ok(())
         });
@@ -215,6 +216,8 @@ pub struct RemoteCredentials {
 
 #[cfg(test)]
 mod tests {
+    use git2::Reference;
+
     use crate::{
         replica::{ReplicationMethod, Replicator},
         test::{create_db, SampleDbStruct},
@@ -309,5 +312,53 @@ mod tests {
         .unwrap();
         let result = repl.replicate();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_replica_add_and_remove_history_tags() {
+        let (db, _td) = create_db();
+        let (db_backup, _td_backup) = create_db();
+        let repl = Replicator::initialize(
+            _td.path(),
+            "test",
+            _td_backup.path().to_str().unwrap(),
+            ReplicationMethod::All,
+            None,
+        )
+        .unwrap();
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("initial a value")),
+            OperationTarget::Main,
+        )
+        .unwrap();
+        db.set(
+            "a",
+            SampleDbStruct::new(String::from("new a value")),
+            OperationTarget::Main,
+        )
+        .unwrap();
+        db.revert_n_commits(1, OperationTarget::Main, true).unwrap();
+        repl.replicate().unwrap();
+
+        let db_tags: Vec<Reference> = db
+            .repository()
+            .references_glob("refs/tags/*")
+            .unwrap()
+            .map(|x| x.unwrap())
+            .collect();
+        assert_eq!(db_tags.len(), 1);
+        let tag = db_tags.first().unwrap();
+        assert!(tag.name().unwrap().starts_with("refs/tags/revert"));
+
+        let db_tags: Vec<Reference> = db_backup
+            .repository()
+            .references_glob("refs/tags/*")
+            .unwrap()
+            .map(|x| x.unwrap())
+            .collect();
+        assert_eq!(db_tags.len(), 1);
+        let backup_tag = db_tags.first().unwrap();
+        assert_eq!(backup_tag.name().unwrap(), tag.name().unwrap());
     }
 }

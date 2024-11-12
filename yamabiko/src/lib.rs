@@ -527,7 +527,7 @@ impl Collection {
         }
     }
 
-    fn prepare_remote_push_tags(&self, head: Oid, target: Oid) -> Result<(), git2::Error> {
+    fn prepare_history_tags(&self, head: Oid, target: Oid) -> Result<(), git2::Error> {
         let remotes = self.repository.remotes()?;
         let current_time = Utc::now();
         let tag_name = format!(
@@ -536,9 +536,12 @@ impl Collection {
             &target.to_string()[0..7],
             current_time.timestamp()
         );
+        self.repository
+            .reference(format!("refs/tags/{}", tag_name).as_str(), head, true, "")?;
         for remote in remotes.iter().flatten() {
             let ref_name = format!("refs/history_tags/{}/{}", remote, tag_name);
             self.repository.reference(&ref_name, head, true, "")?;
+            debug!("Prepared {} for push", &ref_name);
         }
         Ok(())
     }
@@ -558,7 +561,7 @@ impl Collection {
                     ErrorCode::NotFound => error::RevertError::InvalidOperationTarget,
                     _ => e.into(),
                 })?;
-            self.prepare_remote_push_tags(current_commit.id(), target_commit.id())?;
+            self.prepare_history_tags(current_commit.id(), target_commit.id())?;
         }
         repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)?;
         Ok(())
@@ -593,7 +596,7 @@ impl Collection {
             debug!("Current commit to revert: {:?}", target_commit.as_object());
         }
         if keep_history {
-            self.prepare_remote_push_tags(current_commit.id(), target_commit.id())?;
+            self.prepare_history_tags(current_commit.id(), target_commit.id())?;
         }
         repo.reset(target_commit.as_object(), git2::ResetType::Soft, None)?;
         Ok(())
