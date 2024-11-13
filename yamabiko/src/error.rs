@@ -101,3 +101,6 @@ impl From<GitErr> for TransactionError {
 pub enum KeyError {
     NotHashable(GitErr),
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct InvalidDataFormatError;

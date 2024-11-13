@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
+use crate::error::InvalidDataFormatError;
 use crate::field::Field;
 
 #[derive(Debug, Clone, Copy)]
@@ -8,6 +9,20 @@ pub enum DataFormat {
     Json,
     #[cfg(feature = "yaml")]
     Yaml,
+}
+
+impl FromStr for DataFormat {
+    type Err = InvalidDataFormatError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let normalized_str = s.to_lowercase();
+        match normalized_str.as_str() {
+            "json" => Ok(Self::Json),
+            #[cfg(feature = "yaml")]
+            "yaml" => Ok(Self::Yaml),
+            _ => Err(InvalidDataFormatError),
+        }
+    }
 }
 
 impl DataFormat {
@@ -33,7 +48,7 @@ impl DataFormat {
     ) -> String {
         match self {
             Self::Json => {
-                let v: serde_json::Value = serde_json::from_slice(&data).unwrap();
+                let v: serde_json::Value = serde_json::from_slice(data).unwrap();
                 DataFormat::extract_indexes_json(&v, indexes);
                 serde_json::to_string_pretty(&v).unwrap()
             }
@@ -70,7 +85,7 @@ impl DataFormat {
     ) -> bool {
         match self {
             Self::Json => {
-                let v: serde_json::Value = serde_json::from_slice(&data).unwrap();
+                let v: serde_json::Value = serde_json::from_slice(data).unwrap();
                 match v.get(field) {
                     Some(res) => value.partial_cmp(res) == Some(comparison),
                     None => false,
@@ -86,9 +101,9 @@ impl DataFormat {
         T: Deserialize<'a>,
     {
         match self {
-            Self::Json => serde_json::from_str(&data).unwrap(),
+            Self::Json => serde_json::from_str(data).unwrap(),
             #[cfg(feature = "yaml")]
-            Self::Yaml => serde_yaml::from_str(&data).unwrap(),
+            Self::Yaml => serde_yaml::from_str(data).unwrap(),
         }
     }
 }

@@ -120,10 +120,11 @@ Command-line program to manage yamabiko collections
 Usage: ymbk [OPTIONS] <REPO> <COMMAND>
 
 Commands:
-  get               Get data under selected key
+  get               Get data under the selected key
+  set               Set the data under the selected key
   indexes           Operations on indexes
-  revert-n-commits  
-  revert-to-commit  
+  revert-n-commits  Reverts a specified number of commits back
+  revert-to-commit  Reverts back to the specified commit
   help              Print this message or the help of the given subcommand(s)
 
 Arguments:
@@ -136,7 +137,10 @@ Options:
 
 Examples:
   [Output the value stored under the key in the specified collection]
-  ymbk ./collection get key1 
+  ymbk ./collection get key1
+
+  [Set a value to be stored under the key in the specified collection (json is used by default, use --format to change that)]
+  ymbk ./collection set key1 '{"a":2222}'
 
   [Add a numeric index on the field 'number' in the specified collection]
   ymbk ./collection indexes add --field addr --kind numeric

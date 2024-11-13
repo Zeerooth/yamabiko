@@ -9,6 +9,7 @@ use rand::distributions::Alphanumeric;
 use rand::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serialization::DataFormat;
 use std::{collections::HashMap, path::Path};
 
 use crate::field::Field;
@@ -195,6 +196,63 @@ impl Collection {
         Ok(None)
     }
 
+    fn set_batch_with_indexing_fn<S, I, T, F>(
+        &self,
+        items: I,
+        target: OperationTarget,
+        mut indexing_fn: F,
+    ) -> Result<(), error::SetObjectError>
+    where
+        S: Serialize,
+        I: IntoIterator<Item = (T, S)>,
+        T: AsRef<str>,
+        F: FnMut(&DataFormat, S, &mut HashMap<&crate::index::Index, Option<Field>>) -> String,
+    {
+        let indexes = self.index_list();
+        let repo = &self.repository;
+        let branch = match target {
+            OperationTarget::Main => "main",
+            OperationTarget::Transaction(t) => t,
+        };
+        let commit = Collection::current_commit(repo, branch)?;
+
+        let mut root_tree = commit.tree()?;
+        let mut counter = 0;
+        for (key, value) in items {
+            counter += 1;
+            debug!("set #{} key '{}'", counter, key.as_ref());
+            let mut index_values = HashMap::new();
+            for index in indexes.iter() {
+                index_values.insert(index, None);
+            }
+            let blob =
+                repo.blob(indexing_fn(&self.data_format, value, &mut index_values).as_bytes())?;
+            let hash = Oid::hash_object(ObjectType::Blob, key.as_ref().as_bytes())?;
+            let trees =
+                Collection::make_tree(repo, hash.as_bytes(), &root_tree, key.as_ref(), blob)?;
+            root_tree = repo.find_tree(trees)?;
+            for (index, value) in index_values {
+                if let Some(val) = value {
+                    index.create_entry(repo, hash, &val);
+                } else {
+                    index.delete_entry(repo, hash);
+                }
+            }
+        }
+        let signature = Self::signature();
+        let commit_msg = format!("set {} items on {}", counter, branch);
+        let new_commit =
+            repo.commit_create_buffer(&signature, &signature, &commit_msg, &root_tree, &[&commit])?;
+        // unwrap: commit_create_buffer should never create an invalid UTF-8
+        let commit_obj = repo.commit_signed(str::from_utf8(&new_commit).unwrap(), "", None)?;
+        let mut branch_ref = repo
+            .find_branch(branch, BranchType::Local)
+            .map_err(|_| error::SetObjectError::InvalidOperationTarget)?;
+        branch_ref.get_mut().set_target(commit_obj, &commit_msg)?;
+
+        Ok(())
+    }
+
     pub fn set_batch<S, I, T>(
         &self,
         items: I,
@@ -205,56 +263,7 @@ impl Collection {
         I: IntoIterator<Item = (T, S)>,
         T: AsRef<str>,
     {
-        let indexes = self.index_list();
-        let repo = &self.repository;
-        let branch = match target {
-            OperationTarget::Main => "main",
-            OperationTarget::Transaction(t) => t,
-        };
-        let commit = Collection::current_commit(repo, branch)?;
-        {
-            let mut root_tree = commit.tree()?;
-            let mut counter = 0;
-            for (key, value) in items {
-                counter += 1;
-                debug!("set #{} key '{}'", counter, key.as_ref());
-                let mut index_values = HashMap::new();
-                for index in indexes.iter() {
-                    index_values.insert(index, None);
-                }
-                let blob = repo.blob(
-                    self.data_format
-                        .serialize_with_indexes(value, &mut index_values)
-                        .as_bytes(),
-                )?;
-                let hash = Oid::hash_object(ObjectType::Blob, key.as_ref().as_bytes())?;
-                let trees =
-                    Collection::make_tree(repo, hash.as_bytes(), &root_tree, key.as_ref(), blob)?;
-                root_tree = repo.find_tree(trees)?;
-                for (index, value) in index_values {
-                    if let Some(val) = value {
-                        index.create_entry(repo, hash, &val);
-                    } else {
-                        index.delete_entry(repo, hash);
-                    }
-                }
-            }
-            let signature = Self::signature();
-            let commit_msg = format!("set {} items on {}", counter, branch);
-            let new_commit = repo.commit_create_buffer(
-                &signature,
-                &signature,
-                &commit_msg,
-                &root_tree,
-                &[&commit],
-            )?;
-            // unwrap: commit_create_buffer should never create an invalid UTF-8
-            let commit_obj = repo.commit_signed(str::from_utf8(&new_commit).unwrap(), "", None)?;
-            let mut branch_ref = repo
-                .find_branch(branch, BranchType::Local)
-                .map_err(|_| error::SetObjectError::InvalidOperationTarget)?;
-            branch_ref.get_mut().set_target(commit_obj, &commit_msg)?;
-        }
+        self.set_batch_with_indexing_fn(items, target, DataFormat::serialize_with_indexes)?;
         Ok(())
     }
 
@@ -268,6 +277,28 @@ impl Collection {
         S: Serialize,
     {
         self.set_batch([(key, value)], target)
+    }
+
+    pub fn set_batch_raw<'a, I, T>(
+        &self,
+        items: I,
+        target: OperationTarget,
+    ) -> Result<(), error::SetObjectError>
+    where
+        I: IntoIterator<Item = (T, &'a [u8])>,
+        T: AsRef<str>,
+    {
+        self.set_batch_with_indexing_fn(items, target, DataFormat::serialize_with_indexes_raw)?;
+        Ok(())
+    }
+
+    pub fn set_raw(
+        &self,
+        key: &str,
+        value: &[u8],
+        target: OperationTarget,
+    ) -> Result<(), error::SetObjectError> {
+        self.set_batch_raw([(key, value)], target)
     }
 
     pub fn new_transaction(&self, name: Option<&str>) -> Result<String, git2::Error> {

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, str::FromStr};
 
 use clap::{builder::TypedValueParser, Parser, Subcommand};
 use git2::Oid;
@@ -7,7 +7,10 @@ use yamabiko::{serialization::DataFormat, Collection, OperationTarget};
 static ADDITIONAL_HELP_TEXT: &str = color_print::cstr!(
 r#"<bold><underline>Examples:</underline></bold>
   [Output the value stored under the key in the specified collection]
-  <bold>ymbk ./collection get key1</bold> 
+  <bold>ymbk ./collection get key1</bold>
+
+  [Set a value to be stored under the key in the specified collection (json is used by default, use --format to change that)]
+  <bold>ymbk ./collection set key1 '{"a":2222}'</bold>
 
   [Add a numeric index on the field 'number' in the specified collection]
   <bold>ymbk ./collection indexes add --field addr --kind numeric</bold>"#);
@@ -29,13 +32,16 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Get data under selected key
+    /// Get data under the selected key
     Get { key: String },
+    /// Set the data under the selected key
+    Set { key: String, data: String },
     /// Operations on indexes
     Indexes {
         #[command(subcommand)]
         command: IndexCommand,
     },
+    /// Reverts a specified number of commits back 
     RevertNCommits {
         number: usize,
         #[clap(long, short, default_value = "main")]
@@ -43,6 +49,7 @@ enum Command {
         #[clap(long, action)]
         keep_history: bool
     },
+    /// Reverts back to the specified commit
     RevertToCommit {
         commit: String, 
         #[clap(long, action)]
@@ -68,8 +75,9 @@ enum IndexCommand {
 fn main() {
     let args = Args::parse();
     let repo_path = Path::new(&args.repo);
+    let data_format = DataFormat::from_str(args.format.as_str()).expect("Invalid data format");
     let collection =
-        Collection::initialize(repo_path, DataFormat::Json).expect("Failed to load collection");
+        Collection::initialize(repo_path, data_format).expect("Failed to load collection");
     match args.command {
         Command::Get { key } => {
             match collection
@@ -79,7 +87,13 @@ fn main() {
                 Some(data) => println!("{}", data),
                 None => eprintln!("Not found"),
             }
-        }
+        },
+        Command::Set { key, data } => { 
+            match collection.set_raw(key.as_str(), data.as_bytes(), OperationTarget::Main) {
+                Ok(_) => println!("ok"),
+                Err(err) => eprintln!("Error: {:?}", err),
+            }
+        },
         Command::Indexes { command } => match command {
             IndexCommand::List => {
                 for index in collection.index_list() {
@@ -103,6 +117,6 @@ fn main() {
                 }
                 Err(_err) => eprintln!("Invalid commit Oid format")
             }
-        },
+        }, 
     }
 }
