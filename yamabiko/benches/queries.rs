@@ -22,14 +22,14 @@ fn bench_queries(bench: &mut Criterion) {
     bench.bench_function("query large database without indexes", |b| {
         b.iter(|| {
             assert_eq!(
-                QueryBuilder::new()
-                    .query(
-                        q("usize_val", Less, 100)
-                            | q("usize_val", Equal, 1000)
-                            | q("usize_val", Greater, 9900),
-                    )
-                    .execute(&db)
-                    .count,
+                QueryBuilder::query(
+                    q("usize_val", Less, 100)
+                        | q("usize_val", Equal, 1000)
+                        | q("usize_val", Greater, 9900),
+                )
+                .execute(&db)
+                .unwrap()
+                .count,
                 200
             )
         })
@@ -47,13 +47,13 @@ fn bench_queries(bench: &mut Criterion) {
     db.set_batch(hm2, OperationTarget::Main).unwrap();
     bench.bench_function("query large database with an index", |b| {
         b.iter(|| {
-            let query_result = QueryBuilder::new()
-                .query(
-                    q("usize_val", Less, 100)
-                        | q("usize_val", Equal, 1000)
-                        | q("usize_val", Greater, 9900),
-                )
-                .execute(&db);
+            let query_result = QueryBuilder::query(
+                q("usize_val", Less, 100)
+                    | q("usize_val", Equal, 1000)
+                    | q("usize_val", Greater, 9900),
+            )
+            .execute(&db)
+            .unwrap();
             assert_eq!(query_result.count, 200);
             let index = Index::new("usize_val#numeric.index", "usize_val", IndexType::Numeric);
             assert_eq!(
