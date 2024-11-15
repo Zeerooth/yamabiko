@@ -10,12 +10,6 @@ pub enum InitializationError {
     InternalGitError(GitErr),
 }
 
-impl From<GitErr> for InitializationError {
-    fn from(err: GitErr) -> Self {
-        Self::InternalGitError(err)
-    }
-}
-
 #[derive(Debug, PartialEq)]
 pub enum RevertError {
     /// Unable to execute the revert operation - one of the commits in history
@@ -24,27 +18,18 @@ pub enum RevertError {
     BranchingHistory(Oid),
     /// There is no such commit with specified Oid.
     TargetCommitNotFound(Oid),
+    /// OperationTarget the function was invoked with does not exist.
     InvalidOperationTarget,
     /// Unknown error caused by git.
     InternalGitError(GitErr),
 }
 
-impl From<GitErr> for RevertError {
-    fn from(err: GitErr) -> Self {
-        Self::InternalGitError(err)
-    }
-}
-
 #[derive(Debug, PartialEq)]
 pub enum SetObjectError {
+    /// OperationTarget the function was invoked with does not exist.
     InvalidOperationTarget,
+    /// Unknown error caused by git.
     InternalGitError(GitErr),
-}
-
-impl From<GitErr> for SetObjectError {
-    fn from(err: GitErr) -> Self {
-        Self::InternalGitError(err)
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -55,12 +40,6 @@ pub enum GetObjectError {
     InvalidKey(KeyError),
     /// Unknown error caused by git.
     InternalGitError(GitErr),
-}
-
-impl From<GitErr> for GetObjectError {
-    fn from(err: GitErr) -> Self {
-        Self::InternalGitError(err)
-    }
 }
 
 impl From<KeyError> for GetObjectError {
@@ -91,12 +70,6 @@ pub enum TransactionError {
     InternalGitError(GitErr),
 }
 
-impl From<GitErr> for TransactionError {
-    fn from(err: GitErr) -> Self {
-        Self::InternalGitError(err)
-    }
-}
-
 #[derive(Debug, PartialEq)]
 pub enum KeyError {
     NotHashable(GitErr),
@@ -104,3 +77,35 @@ pub enum KeyError {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct InvalidDataFormatError;
+
+#[derive(Debug, PartialEq)]
+pub enum ReplicationError {
+    /// Unknown error caused by git.
+    InternalGitError(GitErr),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum QueryError {
+    /// Unknown error caused by git.
+    InternalGitError(GitErr),
+}
+
+macro_rules! impl_GitErr {
+    ($($t:ty),+) => {
+        $(impl From<GitErr> for $t {
+            fn from(err: GitErr) -> Self {
+                Self::InternalGitError(err)
+            }
+        })*
+    }
+}
+
+impl_GitErr!(
+    InitializationError,
+    RevertError,
+    SetObjectError,
+    GetObjectError,
+    TransactionError,
+    ReplicationError,
+    QueryError
+);

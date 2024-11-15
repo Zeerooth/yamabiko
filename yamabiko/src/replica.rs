@@ -72,7 +72,7 @@ impl Replicator {
                     return Err(err);
                 }
                 let reference = repo.reference_symbolic(ref_name.as_str(), "HEAD", false, "")?;
-                repo.reference_ensure_log(&ref_name).unwrap();
+                repo.reference_ensure_log(&ref_name)?;
                 let mut reflog = repo.reflog(&ref_name)?;
                 let head = repo.head().unwrap();
                 reflog.append(
@@ -136,7 +136,12 @@ impl Replicator {
         Ok(())
     }
 
-    pub fn replicate(&self) -> Result<bool, git2::Error> {
+    /// Try to replicate data to the remote specified during Replicator::initialize.
+    /// Depending on the chosen ReplicationMethod, it may or may not actually happen.
+    /// That's why a bool is returned -> true indicates successful replication, while false means
+    /// that the replication was not even attempted (this result might be different when called
+    /// again in the future)
+    pub fn replicate(&self) -> Result<bool, error::ReplicationError> {
         let rand_res: f64 = rand::thread_rng().gen();
         let replicate = match self.replication_method {
             ReplicationMethod::All => true,
@@ -194,9 +199,12 @@ impl Replicator {
             let mut reflog = self
                 .repository
                 .reflog(&Self::last_push_ref(self.remote_name.as_str()))?;
-            let head = self.repository.head().unwrap();
+
+            // unwrap: head has to exist and point at something
+            let head_target = self.repository.head().unwrap().target().unwrap();
+
             reflog.append(
-                head.target().unwrap(),
+                head_target,
                 &Self::signature(),
                 Some(current_time.to_string().as_str()),
             )?;

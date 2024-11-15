@@ -91,10 +91,10 @@ async fn main() {
 
     // QueryBuilder is not very powerful yet,
     // but it allows for making simple queries on data saved in the collection
-    let query = QueryBuilder::new()
-        .query(q("message", Equal, "GET /index.html") & q("timestamp", Less, 100000))
-        .execute(&db);
-    
+    let query = QueryBuilder::query(
+        q("message", Equal, "GET /index.html") & q("timestamp", Less, 100000)
+      ).maybe_limit(50).execute(&db);
+
     for res in query.results {
         // This is how you can deserialize the results found in the query
         let obj = db.get_by_oid::<LogStruct>(res).unwrap();

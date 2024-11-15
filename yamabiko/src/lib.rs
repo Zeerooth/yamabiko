@@ -1199,37 +1199,37 @@ mod tests {
     fn test_index_removes_entries_on_update() {
         let (db, _td) = create_db();
         db.add_index("str_val", IndexType::Sequential);
-        let query = QueryBuilder::new().query(q("str_val", Equal, "test"));
+        let query = QueryBuilder::query(q("str_val", Equal, "test"));
         db.set(
             "a",
             SampleDbStruct::new(String::from("test")),
             OperationTarget::Main,
         )
         .unwrap();
-        assert_eq!(query.execute(&db).count, 1);
+        assert_eq!(query.execute(&db).unwrap().count, 1);
         db.set("a", FloatyDbStruct { num_val: 69.0 }, OperationTarget::Main)
             .unwrap();
-        assert_eq!(query.execute(&db).count, 0);
+        assert_eq!(query.execute(&db).unwrap().count, 0);
     }
 
     #[test]
     fn test_index_entry_update() {
         let (db, _td) = create_db();
         db.add_index("str_val", IndexType::Sequential);
-        let query = QueryBuilder::new().query(q("str_val", Equal, "test"));
+        let query = QueryBuilder::query(q("str_val", Equal, "test"));
         db.set(
             "a",
             SampleDbStruct::new(String::from("test")),
             OperationTarget::Main,
         )
         .unwrap();
-        assert_eq!(query.execute(&db).count, 1);
+        assert_eq!(query.execute(&db).unwrap().count, 1);
         db.set(
             "a",
             SampleDbStruct::new(String::from("test2")),
             OperationTarget::Main,
         )
         .unwrap();
-        assert_eq!(query.execute(&db).count, 1);
+        assert_eq!(query.execute(&db).unwrap().count, 1);
     }
 }
