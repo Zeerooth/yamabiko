@@ -171,9 +171,7 @@ impl Collection {
                 .as_blob()
                 .ok_or_else(|| error::GetObjectError::CorruptedObject)?;
             let blob_content = blob.content().to_owned();
-            return Ok(Some(
-                self.data_format.deserialize(str::from_utf8(&blob_content)?),
-            ));
+            return Ok(Some(self.data_format.deserialize(&blob_content)));
         };
         Ok(None)
     }
@@ -189,9 +187,7 @@ impl Collection {
         let blob = repo.find_blob(oid);
         if let Ok(blob) = blob {
             let blob_content = blob.content().to_owned();
-            return Ok(Some(
-                self.data_format.deserialize(str::from_utf8(&blob_content)?),
-            ));
+            return Ok(Some(self.data_format.deserialize(&blob_content)));
         };
         Ok(None)
     }
@@ -206,7 +202,7 @@ impl Collection {
         S: Serialize,
         I: IntoIterator<Item = (T, S)>,
         T: AsRef<str>,
-        F: FnMut(&DataFormat, S, &mut HashMap<&crate::index::Index, Option<Field>>) -> String,
+        F: FnMut(&DataFormat, S, &mut HashMap<&crate::index::Index, Option<Field>>) -> Vec<u8>,
     {
         let indexes = self.index_list();
         let repo = &self.repository;
@@ -226,7 +222,7 @@ impl Collection {
                 index_values.insert(index, None);
             }
             let blob =
-                repo.blob(indexing_fn(&self.data_format, value, &mut index_values).as_bytes())?;
+                repo.blob(indexing_fn(&self.data_format, value, &mut index_values).as_slice())?;
             let hash = Oid::hash_object(ObjectType::Blob, key.as_ref().as_bytes())?;
             let trees =
                 Collection::make_tree(repo, hash.as_bytes(), &root_tree, key.as_ref(), blob)?;
@@ -690,6 +686,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn set_and_get(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.set(
@@ -713,6 +710,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn batch_set_and_get(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         let mut hm = HashMap::new();
@@ -770,6 +768,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_get_non_existent_value(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         assert_eq!(
@@ -782,6 +781,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_revert_n_commits(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.set(
@@ -825,6 +825,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_revert_to_commit(#[case] data_format: DataFormat) {
         let (db, td) = create_db(data_format);
         db.set(
@@ -874,6 +875,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_simple_transaction(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.set(
@@ -917,6 +919,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_transaction_overwrite(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.set(
@@ -969,6 +972,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_transaction_discard(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.set(
@@ -1021,6 +1025,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_transaction_abort(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.set(
@@ -1076,6 +1081,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_adding_index(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.add_index("str_val", IndexType::Sequential);
@@ -1097,6 +1103,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_index_content(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.add_index("str_val", IndexType::Sequential);
@@ -1131,6 +1138,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_index_content_numeric(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.add_index("num_val", IndexType::Numeric);
@@ -1167,7 +1175,7 @@ mod tests {
         assert_eq!(index_values.len(), 5);
         assert_eq!(
             String::from_utf8(index_values[0].path.clone()).unwrap(),
-            format!("0/{:16x}/ffffffffffffffff", (-11 as f64).to_bits())
+            format!("0/{:16x}/ffffffffffffffff", (-11.0_f64).to_bits())
         );
         assert_eq!(
             String::from_utf8(index_values[1].path.clone()).unwrap(),
@@ -1190,6 +1198,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_writing_to_correct_index(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.add_index("str_val", IndexType::Numeric);
@@ -1209,6 +1218,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_index_population(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.set(
@@ -1228,6 +1238,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_index_removes_entries_on_update(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.add_index("str_val", IndexType::Sequential);
@@ -1247,6 +1258,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_index_entry_update(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.add_index("str_val", IndexType::Sequential);

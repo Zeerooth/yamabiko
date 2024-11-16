@@ -2,13 +2,13 @@ use std::path::Path;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use git2::Oid;
-use yamabiko::{squash::Squasher, test::create_db, OperationTarget};
+use yamabiko::{serialization::DataFormat, squash::Squasher, test::create_db, OperationTarget};
 
 fn bench_squash_extreme(bench: &mut Criterion) {
     bench.bench_function("squash 10k commits in repo with 100k", |b| {
         b.iter_with_setup(
             || {
-                let (db, td) = create_db();
+                let (db, td) = create_db(DataFormat::Json);
                 let squasher = Squasher::initialize(Path::new(td.path())).unwrap();
                 let mut commit_n1k = Oid::zero();
                 for i in 0..100_000 {

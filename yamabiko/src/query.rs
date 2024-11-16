@@ -380,6 +380,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_simple_query(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.set(
@@ -411,6 +412,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_complex_query(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.set(
@@ -443,6 +445,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_float_number_query(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.set(
@@ -460,6 +463,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_resolution_strategy_and_index(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.add_index("usize_val", IndexType::Numeric);
@@ -479,6 +483,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_resolution_strategy_or_no_index(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.add_index("usize_val", IndexType::Numeric);
@@ -491,6 +496,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_query_results_with_index(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.add_index("usize_val", IndexType::Numeric);
@@ -528,6 +534,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_query_results_every_ordering(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.add_index("usize_val", IndexType::Numeric);
@@ -556,6 +563,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_query_with_limit(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         db.set(

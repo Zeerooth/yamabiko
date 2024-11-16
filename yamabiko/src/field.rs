@@ -83,6 +83,40 @@ impl PartialOrd<serde_yml::Value> for Field {
     }
 }
 
+#[cfg(any(feature = "pot", feature = "full"))]
+impl<'a> PartialEq<pot::Value<'a>> for Field {
+    fn eq(&self, other: &pot::Value) -> bool {
+        match self {
+            Field::Float(f) => other.as_float().map(|x| &x.as_f64() == f).unwrap_or(false),
+            Field::Int(i) => other
+                .as_integer()
+                .map(|x| &x.as_i64().unwrap() == i)
+                .unwrap_or(false),
+            Field::String(s) => other.as_str().map(|x| x == s).unwrap_or(false),
+        }
+    }
+}
+
+#[cfg(any(feature = "pot", feature = "full"))]
+impl<'a> PartialOrd<pot::Value<'a>> for Field {
+    fn partial_cmp(&self, other: &pot::Value) -> Option<Ordering> {
+        match self {
+            Field::Float(f) => other
+                .as_float()
+                .map(|x| x.as_f64().partial_cmp(f))
+                .unwrap_or(None),
+            Field::Int(i) => other
+                .as_integer()
+                .map(|x| x.as_i64().unwrap().partial_cmp(i))
+                .unwrap_or(None),
+            Field::String(s) => other
+                .as_str()
+                .map(|x| x.partial_cmp(s.as_str()))
+                .unwrap_or(None),
+        }
+    }
+}
+
 impl PartialOrd<Self> for Field {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self {
@@ -163,34 +197,63 @@ impl Field {
             Field::String(_) => 1,
         }
     }
+}
 
-    pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
+impl TryFrom<&serde_json::Value> for Field {
+    type Error = ();
+
+    fn try_from(value: &serde_json::Value) -> Result<Self, Self::Error> {
         match value {
             serde_json::Value::Null => todo!(),
             serde_json::Value::Bool(_) => todo!(),
             serde_json::Value::Number(v) => v
                 .as_i64()
                 .map(Self::Int)
-                .or_else(|| v.as_f64().map(Self::Float)),
-            serde_json::Value::String(v) => Some(Self::String(v.as_str().to_string())),
+                .or_else(|| v.as_f64().map(Self::Float))
+                .ok_or(()),
+            serde_json::Value::String(v) => Ok(Self::String(v.as_str().to_string())),
             serde_json::Value::Array(_) => todo!(),
             serde_json::Value::Object(_) => todo!(),
         }
     }
+}
 
-    #[cfg(any(feature = "yaml", feature = "full"))]
-    pub fn from_yaml_value(value: &serde_yml::Value) -> Option<Self> {
+#[cfg(any(feature = "yaml", feature = "full"))]
+impl TryFrom<&serde_yml::Value> for Field {
+    type Error = ();
+
+    fn try_from(value: &serde_yml::Value) -> Result<Self, Self::Error> {
         match value {
             serde_yml::Value::Null => todo!(),
             serde_yml::Value::Bool(_) => todo!(),
             serde_yml::Value::Number(v) => v
                 .as_i64()
                 .map(Self::Int)
-                .or_else(|| v.as_f64().map(Self::Float)),
-            serde_yml::Value::String(v) => Some(Self::String(v.as_str().to_string())),
+                .or_else(|| v.as_f64().map(Self::Float))
+                .ok_or(()),
+            serde_yml::Value::String(v) => Ok(Self::String(v.as_str().to_string())),
             serde_yml::Value::Sequence(_vec) => todo!(),
             serde_yml::Value::Mapping(_mapping) => todo!(),
             serde_yml::Value::Tagged(_tagged_value) => todo!(),
+        }
+    }
+}
+
+#[cfg(any(feature = "pot", feature = "full"))]
+impl<'a> TryFrom<&pot::Value<'a>> for Field {
+    type Error = ();
+
+    fn try_from(value: &pot::Value) -> Result<Self, Self::Error> {
+        match value {
+            pot::Value::None => todo!(),
+            pot::Value::Unit => todo!(),
+            pot::Value::Bool(_) => todo!(),
+            pot::Value::Integer(i) => i.as_i64().map(Self::Int).map_err(|_| ()),
+            pot::Value::Float(f) => Ok(Self::Float(f.as_f64())),
+            pot::Value::Bytes(_cow) => todo!(),
+            pot::Value::String(s) => Ok(Self::String(s.to_string())),
+            pot::Value::Sequence(_vec) => todo!(),
+            pot::Value::Mappings(_vec) => todo!(),
         }
     }
 }

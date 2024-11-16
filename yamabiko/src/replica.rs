@@ -238,6 +238,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_replica_same_name(#[case] data_format: DataFormat) {
         let (_, td) = create_db(data_format);
         Replicator::initialize(td.path(), "test", "test", ReplicationMethod::All, None).unwrap();
@@ -247,6 +248,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_replica_sync(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         let (db_backup, _td_backup) = create_db(data_format);
@@ -280,6 +282,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_replica_periodic(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         let (db_backup, _td_backup) = create_db(data_format);
@@ -313,6 +316,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_replica_non_existing_repo(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         let repl = Replicator::initialize(
@@ -336,6 +340,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_replica_add_and_remove_history_tags(#[case] data_format: DataFormat) {
         let (db, _td) = create_db(data_format);
         let (db_backup, _td_backup) = create_db(data_format);

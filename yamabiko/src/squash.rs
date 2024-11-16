@@ -161,6 +161,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_simple_squash_of_3_commits(#[case] data_format: DataFormat) {
         let (db, td) = create_db(data_format);
         let squasher = Squasher::initialize(td.path()).unwrap();
@@ -220,6 +221,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_squash_with_revert_and_saved_history(#[case] data_format: DataFormat) {
         let (db, td) = create_db(data_format);
         let squasher = Squasher::initialize(td.path()).unwrap();
@@ -281,6 +283,7 @@ mod tests {
     #[rstest]
     #[case(DataFormat::Json)]
     #[case(DataFormat::Yaml)]
+    #[case(DataFormat::Pot)]
     fn test_squash_of_5_commits_with_multiple_keys_modified(#[case] data_format: DataFormat) {
         let (db, td) = create_db(data_format);
         let squasher = Squasher::initialize(td.path()).unwrap();

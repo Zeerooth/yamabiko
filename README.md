@@ -13,10 +13,11 @@ Yamabiko is an embedded database system with version control based on git. There
 ## Features
 
 - [x] Get, set and commit serializable data to a local git repo using Key-Value storage
-- [x] Optional long-living transactions (under separate branches)
-- [x] Manage indexes for faster queries
 - [x] Replicate data to remote repositories (backup)
 - [x] Keep the entire history of changes and easily revert back
+- [x] Choose among multiple data formats for objects in your collection (JSON, YAML, Pot)
+- [x] Optional long-living transactions (under separate branches)
+- [x] Manage indexes for faster queries
 
 ## Library demo
 
