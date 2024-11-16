@@ -154,11 +154,15 @@ impl Squasher {
 mod tests {
     use git2::{BranchType, Repository};
 
-    use crate::{squash::Squasher, test::*, OperationTarget};
+    use crate::{serialization::DataFormat, squash::Squasher, test::*, OperationTarget};
 
-    #[test]
-    fn test_simple_squash_of_3_commits() {
-        let (db, td) = create_db();
+    use rstest::rstest;
+
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_simple_squash_of_3_commits(#[case] data_format: DataFormat) {
+        let (db, td) = create_db(data_format);
         let squasher = Squasher::initialize(td.path()).unwrap();
         db.set(
             "a",
@@ -213,9 +217,11 @@ mod tests {
         assert_eq!(new_head_commit.parent(0).unwrap().parent_count(), 0);
     }
 
-    #[test]
-    fn test_squash_with_revert_and_saved_history() {
-        let (db, td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_squash_with_revert_and_saved_history(#[case] data_format: DataFormat) {
+        let (db, td) = create_db(data_format);
         let squasher = Squasher::initialize(td.path()).unwrap();
         db.set(
             "pref1/a",
@@ -272,9 +278,11 @@ mod tests {
         assert_eq!(new_head_commit.parent(0).unwrap().parent_count(), 0);
     }
 
-    #[test]
-    fn test_squash_of_5_commits_with_multiple_keys_modified() {
-        let (db, td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_squash_of_5_commits_with_multiple_keys_modified(#[case] data_format: DataFormat) {
+        let (db, td) = create_db(data_format);
         let squasher = Squasher::initialize(td.path()).unwrap();
         db.set(
             "pref1/a",
@@ -336,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_no_discarded_changes_while_squashing() {
-        let (db, td) = create_db();
+        let (db, td) = create_db(DataFormat::Json);
         let squasher = Squasher::initialize(td.path()).unwrap();
         for i in 0..1000 {
             db.set(

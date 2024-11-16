@@ -368,16 +368,20 @@ mod tests {
     use crate::{
         index::{Index, IndexType},
         query::{q, QueryBuilder},
+        serialization::DataFormat,
         test::*,
         OperationTarget,
     };
+    use rstest::rstest;
     use std::cmp::Ordering::*;
 
     use super::ResolutionStrategy;
 
-    #[test]
-    fn test_simple_query() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_simple_query(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.set(
             "a",
             SampleDbStruct {
@@ -404,9 +408,11 @@ mod tests {
         assert_eq!(obj.unwrap().unwrap().str_val, "value");
     }
 
-    #[test]
-    fn test_complex_query() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_complex_query(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.set(
             "a",
             ComplexDbStruct::new(String::from("value"), 22, 1.0),
@@ -434,9 +440,11 @@ mod tests {
         assert_eq!(query_result.count, 2);
     }
 
-    #[test]
-    fn test_float_number_query() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_float_number_query(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.set(
             "a",
             ComplexDbStruct::new(String::from("value"), 22, 4.20),
@@ -449,9 +457,11 @@ mod tests {
         assert_eq!(query_result.count, 1);
     }
 
-    #[test]
-    fn test_resolution_strategy_and_index() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_resolution_strategy_and_index(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.add_index("usize_val", IndexType::Numeric);
         let result = QueryBuilder::query(q("usize_val", Equal, 22) & q("str_val", Equal, "qwerty"))
             .execute(&db)
@@ -466,9 +476,11 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_resolution_strategy_or_no_index() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_resolution_strategy_or_no_index(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.add_index("usize_val", IndexType::Numeric);
         let result = QueryBuilder::query(q("usize_val", Equal, 22) | q("str_val", Equal, "qwerty"))
             .execute(&db)
@@ -476,9 +488,11 @@ mod tests {
         assert_eq!(result.resolution_strategy, ResolutionStrategy::Scan)
     }
 
-    #[test]
-    fn test_query_results_with_index() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_query_results_with_index(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.add_index("usize_val", IndexType::Numeric);
         let result = QueryBuilder::query(q("usize_val", Greater, 22))
             .execute(&db)
@@ -511,9 +525,11 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_query_results_every_ordering() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_query_results_every_ordering(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.add_index("usize_val", IndexType::Numeric);
         const INIT_DB_SIZE: usize = 1_000;
         let hm: [usize; INIT_DB_SIZE] = core::array::from_fn(|i| i + 1);
@@ -537,9 +553,11 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_query_with_limit() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_query_with_limit(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.set(
             "a",
             ComplexDbStruct::new(String::from("value"), 22, 1.0),

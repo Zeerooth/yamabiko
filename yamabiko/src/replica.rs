@@ -228,21 +228,28 @@ mod tests {
 
     use crate::{
         replica::{ReplicationMethod, Replicator},
+        serialization::DataFormat,
         test::{create_db, SampleDbStruct},
         OperationTarget,
     };
 
-    #[test]
-    fn test_replica_same_name() {
-        let (_, td) = create_db();
+    use rstest::rstest;
+
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_replica_same_name(#[case] data_format: DataFormat) {
+        let (_, td) = create_db(data_format);
         Replicator::initialize(td.path(), "test", "test", ReplicationMethod::All, None).unwrap();
         Replicator::initialize(td.path(), "test", "test", ReplicationMethod::All, None).unwrap();
     }
 
-    #[test]
-    fn test_replica_sync() {
-        let (db, _td) = create_db();
-        let (db_backup, _td_backup) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_replica_sync(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
+        let (db_backup, _td_backup) = create_db(data_format);
         let repl = Replicator::initialize(
             _td.path(),
             "test",
@@ -270,10 +277,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_replica_periodic() {
-        let (db, _td) = create_db();
-        let (db_backup, _td_backup) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_replica_periodic(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
+        let (db_backup, _td_backup) = create_db(data_format);
         let repl = Replicator::initialize(
             _td.path(),
             "test",
@@ -301,9 +310,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_replica_non_existing_repo() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_replica_non_existing_repo(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         let repl = Replicator::initialize(
             _td.path(),
             "test",
@@ -322,10 +333,12 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_replica_add_and_remove_history_tags() {
-        let (db, _td) = create_db();
-        let (db_backup, _td_backup) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_replica_add_and_remove_history_tags(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
+        let (db_backup, _td_backup) = create_db(data_format);
         let repl = Replicator::initialize(
             _td.path(),
             "test",

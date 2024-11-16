@@ -675,19 +675,23 @@ mod tests {
     use std::collections::HashMap;
 
     use git2::{BranchType, Repository};
+    use rstest::rstest;
 
     use crate::{
         error,
         index::{Index, IndexType},
         query::{q, QueryBuilder},
+        serialization::DataFormat,
         OperationTarget,
     };
 
     use super::test::*;
 
-    #[test]
-    fn set_and_get() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn set_and_get(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.set(
             "key",
             SampleDbStruct {
@@ -706,9 +710,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn batch_set_and_get() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn batch_set_and_get(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         let mut hm = HashMap::new();
         hm.insert(
             "pref/a",
@@ -761,9 +767,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_get_non_existent_value() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_get_non_existent_value(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         assert_eq!(
             db.get::<SampleDbStruct>("key", OperationTarget::Main)
                 .unwrap(),
@@ -771,9 +779,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_revert_n_commits() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_revert_n_commits(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.set(
             "a",
             SampleDbStruct::new(String::from("initial a value")),
@@ -812,9 +822,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_revert_to_commit() {
-        let (db, td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_revert_to_commit(#[case] data_format: DataFormat) {
+        let (db, td) = create_db(data_format);
         db.set(
             "a",
             SampleDbStruct::new(String::from("initial a value")),
@@ -859,9 +871,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_simple_transaction() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_simple_transaction(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.set(
             "a",
             SampleDbStruct::new(String::from("a val")),
@@ -900,9 +914,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_transaction_overwrite() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_transaction_overwrite(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.set(
             "a",
             SampleDbStruct::new(String::from("INIT\nline2")),
@@ -950,9 +966,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_transaction_discard() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_transaction_discard(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.set(
             "a",
             SampleDbStruct::new(String::from("INIT\nline2")),
@@ -1000,9 +1018,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_transaction_abort() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_transaction_abort(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.set(
             "a",
             SampleDbStruct::new(String::from("INIT\nline2")),
@@ -1053,9 +1073,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_adding_index() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_adding_index(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.add_index("str_val", IndexType::Sequential);
         db.add_index("str_val", IndexType::Sequential);
         db.set(
@@ -1072,9 +1094,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_index_content() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_index_content(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.add_index("str_val", IndexType::Sequential);
         db.set(
             "a",
@@ -1104,9 +1128,11 @@ mod tests {
         assert_eq!(index_values[2].path, "2val/ffffffffffffffff".as_bytes());
     }
 
-    #[test]
-    fn test_index_content_numeric() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_index_content_numeric(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.add_index("num_val", IndexType::Numeric);
         db.set(
             "b",
@@ -1161,9 +1187,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_writing_to_correct_index() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_writing_to_correct_index(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.add_index("str_val", IndexType::Numeric);
         db.set(
             "a",
@@ -1178,9 +1206,11 @@ mod tests {
         assert_eq!(index_values.len(), 0);
     }
 
-    #[test]
-    fn test_index_population() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_index_population(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.set(
             "a",
             SampleDbStruct::new(String::from("test")),
@@ -1195,9 +1225,11 @@ mod tests {
         assert_eq!(index_values.len(), 1);
     }
 
-    #[test]
-    fn test_index_removes_entries_on_update() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_index_removes_entries_on_update(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.add_index("str_val", IndexType::Sequential);
         let query = QueryBuilder::query(q("str_val", Equal, "test"));
         db.set(
@@ -1212,9 +1244,11 @@ mod tests {
         assert_eq!(query.execute(&db).unwrap().count, 0);
     }
 
-    #[test]
-    fn test_index_entry_update() {
-        let (db, _td) = create_db();
+    #[rstest]
+    #[case(DataFormat::Json)]
+    #[case(DataFormat::Yaml)]
+    fn test_index_entry_update(#[case] data_format: DataFormat) {
+        let (db, _td) = create_db(data_format);
         db.add_index("str_val", IndexType::Sequential);
         let query = QueryBuilder::query(q("str_val", Equal, "test"));
         db.set(

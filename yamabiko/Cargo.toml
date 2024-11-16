@@ -12,18 +12,19 @@ serde_json = "1.0"
 chrono = "0.4"
 tempfile = "3.13"
 rand = "0.8"
-serde_yaml = { version = "0.9", optional = true }
+serde_yml = { version = "0.0.12", optional = true }
 log = { version = "0.4", optional = true }
 thiserror = "2.0.3"
 
 [features]
-full = ["log", "serde_yaml"]
-yaml = ["serde_yaml"]
+full = ["log", "serde_yml"]
+yaml = ["serde_yml"]
 
 [dev-dependencies]
 criterion = "0.5.1"
 simple_logger = "5.0.0"
 tokio = { version = "1.41", features = ["full"] }
+rstest = "0.23"
 
 [[bench]]
 name = "perf"

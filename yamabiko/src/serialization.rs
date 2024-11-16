@@ -4,10 +4,13 @@ use std::{collections::HashMap, str::FromStr};
 use crate::error::InvalidDataFormatError;
 use crate::field::Field;
 
+#[cfg(any(feature = "yaml", feature = "full"))]
+use serde_yml;
+
 #[derive(Debug, Clone, Copy)]
 pub enum DataFormat {
     Json,
-    #[cfg(feature = "yaml")]
+    #[cfg(any(feature = "yaml", feature = "full"))]
     Yaml,
 }
 
@@ -18,7 +21,7 @@ impl FromStr for DataFormat {
         let normalized_str = s.to_lowercase();
         match normalized_str.as_str() {
             "json" => Ok(Self::Json),
-            #[cfg(feature = "yaml")]
+            #[cfg(any(feature = "yaml", feature = "full"))]
             "yaml" => Ok(Self::Yaml),
             _ => Err(InvalidDataFormatError),
         }
@@ -41,6 +44,22 @@ impl DataFormat {
         }
     }
 
+    #[cfg(any(feature = "yaml", feature = "full"))]
+    pub fn extract_indexes_yaml(
+        data: &serde_yml::Value,
+        indexes: &mut HashMap<&crate::index::Index, Option<Field>>,
+    ) {
+        for (k, v) in indexes.iter_mut() {
+            if let Some(index_value) = data.get(k.indexed_field()) {
+                if let Some(field) = Field::from_yaml_value(index_value) {
+                    if k.indexes_given_field(&field) {
+                        *v = Some(field);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn serialize_with_indexes_raw(
         &self,
         data: &[u8],
@@ -52,8 +71,12 @@ impl DataFormat {
                 DataFormat::extract_indexes_json(&v, indexes);
                 serde_json::to_string_pretty(&v).unwrap()
             }
-            #[cfg(feature = "yaml")]
-            Self::Yaml => serde_yaml::to_string(&data).unwrap(),
+            #[cfg(any(feature = "yaml", feature = "full"))]
+            Self::Yaml => {
+                let v: serde_yml::Value = serde_yml::from_slice(data).unwrap();
+                DataFormat::extract_indexes_yaml(&v, indexes);
+                serde_yml::to_string(&v).unwrap()
+            }
         }
     }
 
@@ -71,8 +94,12 @@ impl DataFormat {
                 DataFormat::extract_indexes_json(&v, indexes);
                 serde_json::to_string_pretty(&v).unwrap()
             }
-            #[cfg(feature = "yaml")]
-            Self::Yaml => serde_yaml::to_string(&data).unwrap(),
+            #[cfg(any(feature = "yaml", feature = "full"))]
+            Self::Yaml => {
+                let v: serde_yml::Value = serde_yml::to_value(&data).unwrap();
+                DataFormat::extract_indexes_yaml(&v, indexes);
+                serde_yml::to_string(&v).unwrap()
+            }
         }
     }
 
@@ -91,8 +118,14 @@ impl DataFormat {
                     None => false,
                 }
             }
-            #[cfg(feature = "yaml")]
-            Self::Yaml => true,
+            #[cfg(any(feature = "yaml", feature = "full"))]
+            Self::Yaml => {
+                let v: serde_yml::Value = serde_yml::from_slice(data).unwrap();
+                match v.get(field) {
+                    Some(res) => value.partial_cmp(res) == Some(comparison),
+                    None => false,
+                }
+            }
         }
     }
 
@@ -102,8 +135,8 @@ impl DataFormat {
     {
         match self {
             Self::Json => serde_json::from_str(data).unwrap(),
-            #[cfg(feature = "yaml")]
-            Self::Yaml => serde_yaml::from_str(data).unwrap(),
+            #[cfg(any(feature = "yaml", feature = "full"))]
+            Self::Yaml => serde_yml::from_str(data).unwrap(),
         }
     }
 }

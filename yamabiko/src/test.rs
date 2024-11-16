@@ -44,7 +44,7 @@ impl ComplexDbStruct {
     }
 }
 
-pub fn create_db() -> (Collection, TempDir) {
+pub fn create_db(data_format: DataFormat) -> (Collection, TempDir) {
     #[cfg(test)]
     let _ = SimpleLogger::new().init();
     let keep_test_dir = !std::env::var("YAMABIKO_KEEP_TEST_DIR")
@@ -53,7 +53,7 @@ pub fn create_db() -> (Collection, TempDir) {
     let tmpdir = Builder::new().keep(keep_test_dir).tempdir().unwrap();
     debug!("Using tmpdir {:?} for this test", tmpdir.path().to_str());
     (
-        Collection::initialize(tmpdir.path(), DataFormat::Json).unwrap(),
+        Collection::initialize(tmpdir.path(), data_format).unwrap(),
         tmpdir,
     )
 }

@@ -58,6 +58,31 @@ impl PartialOrd<serde_json::Value> for Field {
     }
 }
 
+#[cfg(any(feature = "yaml", feature = "full"))]
+impl PartialEq<serde_yml::Value> for Field {
+    fn eq(&self, other: &serde_yml::Value) -> bool {
+        match self {
+            Field::Float(f) => other.as_f64().map(|x| &x == f).unwrap_or(false),
+            Field::Int(i) => other.as_i64().map(|x| &x == i).unwrap_or(false),
+            Field::String(s) => other.as_str().map(|x| x == s).unwrap_or(false),
+        }
+    }
+}
+
+#[cfg(any(feature = "yaml", feature = "full"))]
+impl PartialOrd<serde_yml::Value> for Field {
+    fn partial_cmp(&self, other: &serde_yml::Value) -> Option<Ordering> {
+        match self {
+            Field::Float(f) => other.as_f64().map(|x| x.partial_cmp(f)).unwrap_or(None),
+            Field::Int(i) => other.as_i64().map(|x| x.partial_cmp(i)).unwrap_or(None),
+            Field::String(s) => other
+                .as_str()
+                .map(|x| x.partial_cmp(s.as_str()))
+                .unwrap_or(None),
+        }
+    }
+}
+
 impl PartialOrd<Self> for Field {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match self {
@@ -150,6 +175,22 @@ impl Field {
             serde_json::Value::String(v) => Some(Self::String(v.as_str().to_string())),
             serde_json::Value::Array(_) => todo!(),
             serde_json::Value::Object(_) => todo!(),
+        }
+    }
+
+    #[cfg(any(feature = "yaml", feature = "full"))]
+    pub fn from_yaml_value(value: &serde_yml::Value) -> Option<Self> {
+        match value {
+            serde_yml::Value::Null => todo!(),
+            serde_yml::Value::Bool(_) => todo!(),
+            serde_yml::Value::Number(v) => v
+                .as_i64()
+                .map(Self::Int)
+                .or_else(|| v.as_f64().map(Self::Float)),
+            serde_yml::Value::String(v) => Some(Self::String(v.as_str().to_string())),
+            serde_yml::Value::Sequence(_vec) => todo!(),
+            serde_yml::Value::Mapping(_mapping) => todo!(),
+            serde_yml::Value::Tagged(_tagged_value) => todo!(),
         }
     }
 }
